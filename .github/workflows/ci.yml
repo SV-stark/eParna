@@ -14,7 +14,10 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Cancel superseded PR builds, but never cancel a main-branch build: these
+  # take ~20 minutes (fat LTO over gpui), so cancelling one wastes a lot of CI
+  # time and tells you nothing the newer run won't.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
