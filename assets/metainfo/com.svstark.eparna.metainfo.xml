@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  AppStream metainfo, embedded into the AppImage by cargo-bundle.
+
+  Software centres (GNOME Software, KDE Discover, Plasma, etc.) use this to
+  populate app listings. Without it the AppImage still runs, but shows up with
+  no name, icon or description in those stores.
+-->
+<component type="desktop-application">
+  <id>com.svstark.eparna</id>
+
+  <name>eParna</name>
+  <summary>A fast, lightweight, cross-platform ebook reader</summary>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+
+  <description>
+    <p>
+      eParna is a fast, lightweight, cross-platform desktop ebook reader
+      written in pure Rust. The name comes from Sanskrit parṇa — "leaf" — so
+      eParna is literally an "e-leaf": a light, quiet place to read.
+    </p>
+    <p>Supported formats:</p>
+    <ul>
+      <li>EPUB 2 and EPUB 3</li>
+      <li>MOBI and AZW3</li>
+      <li>FictionBook 2 and Microsoft Reader LIT</li>
+      <li>CBZ comic archives</li>
+      <li>PDF</li>
+      <li>ODT and DOCX</li>
+      <li>Rich Text Format</li>
+      <li>Plain text and Markdown</li>
+    </ul>
+    <p>Features include a library with cover thumbnails and deduplication, table
+      of contents with deep search, bookmarks, notes, full-text and regex
+      search, light/dark/sepia themes, typography controls, footnotes,
+      dictionary and Wikipedia lookup, OPDS catalog support, EPUB conversion
+      and a built-in book validator.</p>
+    <p>Reading is fully offline. The only network requests are ones you
+      explicitly trigger.</p>
+  </description>
+
+  <launchable type="desktop-id">com.svstark.eparna.desktop</launchable>
+
+  <url type="homepage">https://github.com/SV-stark/eParna</url>
+  <url type="bugtracker">https://github.com/SV-stark/eParna/issues</url>
+  <url type="vcs-browser">https://github.com/SV-stark/eParna</url>
+
+  <developer id="com.svstark">
+    <name>SV-stark</name>
+  </developer>
+
+  <provides>
+    <binary>eparna</binary>
+  </provides>
+
+  <categories>
+    <category>Education</category>
+    <category>Viewer</category>
+  </categories>
+
+  <keywords>
+    <keyword>ebook</keyword>
+    <keyword>epub</keyword>
+    <keyword>reader</keyword>
+    <keyword>book</keyword>
+  </keywords>
+
+  <content_rating type="oars-1.1" />
+
+  <releases>
+    <release version="0.4.0" date="2026-10-18">
+      <description>
+        <p>
+          Enables PDF support and wires up more of the ebook-rs API: regex
+          search, deep TOC search, richer book metadata, validation,
+          cover thumbnails, library deduplication and EPUB conversion.
+        </p>
+      </description>
+    </release>
+  </releases>
+</component>

@@ -30,6 +30,8 @@ identifier = "com.svstark.eparna"
 # valid freedesktop category and made the AppImage job fail.
 category = "Education"
 short_description = "A fast, lightweight, cross-platform ebook reader"
+# AppStream metadata, embedded in the AppImage so software centres can list it.
+appimage_metainfo_path = "assets/metainfo/com.svstark.eparna.metainfo.xml"
 icon = [
     "assets/icons/32x32.png",
     "assets/icons/128x128.png",

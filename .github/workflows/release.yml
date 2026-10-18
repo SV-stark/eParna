@@ -372,13 +372,21 @@ jobs:
       - name: Upload AppImage to the release
         run: |
           set -euo pipefail
-          APPIMAGE="$(ls -1 target/x86_64-unknown-linux-gnu/release/bundle/*.AppImage)"
+          # cargo-bundle nests the artifact under bundle/<format>/ (e.g.
+          # bundle/appimage/eparna_0.4.0_x86_64.AppImage), and that layout has
+          # changed between releases, so search rather than hard-coding it.
+          APPIMAGE="$(find target -type f -name '*.AppImage' | head -1)"
+          if [ -z "$APPIMAGE" ]; then
+            echo "::error::no .AppImage was produced; bundle dir was:"
+            find target -type d -name bundle -exec ls -R {} \; || true
+            exit 1
+          fi
           echo "Uploading: $APPIMAGE"
           gh release upload "${{ needs.plan.outputs.tag }}" "$APPIMAGE" --clobber
 
       - name: Write checksum for the AppImage
         run: |
           set -euo pipefail
-          APPIMAGE="$(ls -1 target/x86_64-unknown-linux-gnu/release/bundle/*.AppImage)"
+          APPIMAGE="$(find target -type f -name '*.AppImage' | head -1)"
           sha256sum "$APPIMAGE" > "${APPIMAGE}.sha256"
           gh release upload "${{ needs.plan.outputs.tag }}" "${APPIMAGE}.sha256" --clobber
