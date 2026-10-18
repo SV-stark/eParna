@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Nothing yet.
 
+## [0.4.0] - 2026-10-18
+
+### Added
+- Regex in-book search (`Regex: on/off`) with a configurable result cap.
+- Deep table-of-contents search with breadcrumbs ("Find in TOC").
+- Richer book info: author, publisher, language, dates, subjects, identifier,
+  rights and description.
+- Structural validation report ("Validate").
+- Cover thumbnails in the library (cached under the app data directory).
+- Library deduplication by content hash: reopening the same book from another
+  path updates the existing entry instead of adding a duplicate.
+- "Save as EPUB" conversion for any supported format.
+- Enabled additional `ebook-rs` features: `pdf`, `parallel`, `mmap`, `zstd`
+  (PDF parsing, parallel ZIP export, memory-mapped I/O, Zstd state caching).
+
+### Changed
+- Version bumped to 0.4.0.
+- Pinned `office_oxide` to `0.1.11`: `0.1.12` added a required `defined_names`
+  field to `DocumentIR`, which broke `pdf_oxide 0.3.78`'s struct literal and
+  prevented the `pdf` feature from compiling.
+
 ## [0.3.0] - 2026-10-18
 
 ### Added

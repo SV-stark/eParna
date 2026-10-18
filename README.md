@@ -12,13 +12,21 @@ Built on [ebook-rs](https://crates.io/crates/ebook-rs) for multi-format parsing 
 
 - **Multi-format support** — EPUB 2/3, MOBI, AZW3, FB2, LIT, CBZ, PDF, ODT, DOCX,
   RTF, TXT and Markdown, detected automatically from file contents.
-- **Library view** — recent books with one-click reopen and removal.
+- **Library view** — recent books with one-click reopen and removal, cover
+  thumbnails, favourites, filtering and sorting.
+- **Deduplication** — the same book opened from another path updates the existing
+  entry (content-hash based) instead of adding a duplicate.
 - **GPU-accelerated rendering** — smooth scrolling and responsive navigation powered by gpui.
 - **Inlined assets** — images and resources are embedded (base64) by ebook-rs, so sections render offline.
-- **Table of contents** — jump to any chapter via the Contents selector.
+- **Table of contents** — jump to any chapter via the Contents selector, or deep-search
+  the TOC by title with breadcrumbs.
 - **Bookmarks** — toggle and revisit bookmarked sections.
 - **Annotations** — add notes to the current section and browse them.
-- **In-book search** — full-text search with result snippets and jump-to-result.
+- **In-book search** — full-text search with result snippets, jump-to-result, regex
+  mode, and a configurable result cap.
+- **Book info** — author, publisher, language, dates, subjects, identifier, rights
+  and description, plus a structural validation report.
+- **Save as EPUB** — convert any supported format to a clean EPUB 3 file.
 - **Themes** — Light, Dark, and Sepia.
 - **Typography & layout** — adjustable font size, font family, line height, margins, max content width, two-page view.
 - **Footnotes** — browse footnotes for the current section.
@@ -98,7 +106,7 @@ Known gaps (mostly limited by the current UI stack):
 - Text-selection highlights (multi-colour) and pop-up footnote links.
 - Text-to-speech.
 - True paginated (page-flip) layout and hyphenation; scrolling is used instead.
-- Cover images / grid library, metadata editing, and sync.
+- A grid/covers library view and metadata editing.
 
 ## Project layout
 
@@ -116,11 +124,17 @@ eParna/
 
 | Crate     | Version | Purpose                          |
 |-----------|---------|----------------------------------|
-| ebook-rs  | 0.17.1  | Ebook parsing & section rendering |
+| ebook-rs  | 0.17.1  | Ebook parsing, search, TOC, covers, validation, EPUB export |
 | gpui-kit  | 0.7.3   | UI framework & components        |
 | rfd       | 0.15    | Native file dialogs              |
 | serde     | 1       | State serialization              |
+| serde_json| 1       | State (de)serialization          |
 | ureq      | 3       | OPDS catalogs & online lookups   |
+| base64    | 0.23    | Cover thumbnails                 |
+
+`ebook-rs` is used with the `serde`, `opds`, `pdf`, `parallel`, `mmap` and `zstd`
+features enabled (PDF parsing, parallel ZIP export, memory-mapped I/O and Zstd
+state caching).
 
 ## License
 

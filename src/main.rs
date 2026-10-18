@@ -1,3 +1,4 @@
+use base64::Engine as _;
 use ebook_rs::SearchResult;
 use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::component::{
@@ -22,6 +23,12 @@ struct RecentBook {
     opened: String,
     #[serde(default)]
     favorite: bool,
+    /// SHA-256 content hash from `Book::fingerprint()`, used to dedupe the library.
+    #[serde(default)]
+    content_hash: String,
+    /// Path to a cached cover image (for library thumbnails).
+    #[serde(default)]
+    cover: String,
 }
 
 #[derive(Clone, Serialize, Deserialize, Default)]
@@ -75,6 +82,25 @@ enum SidebarMode {
     Dictionary,
 }
 
+/// Resolve a TOC href (which may carry a `#fragment`) to a spine section index.
+fn href_to_index(book: &ebook_rs::Book, href: &str) -> Option<usize> {
+    let href = href.split('#').next().unwrap_or(href);
+    book.sections()
+        .iter()
+        .position(|s| s.href == href || s.full_path.ends_with(href) || href.ends_with(&s.href))
+}
+
+/// Push a short notification without repeating the builder boilerplate.
+fn notify_simple(window: &mut Window, cx: &mut Context<ReaderView>, title: &str, message: String) {
+    use gpui_kit::component::WindowExt;
+    window.push_notification(
+        gpui_kit::component::notification::Notification::new()
+            .title(title)
+            .message(message),
+        cx,
+    );
+}
+
 struct ReaderView {
     state: PersistedState,
     config_path: PathBuf,
@@ -118,6 +144,12 @@ struct ReaderView {
 
     dictionary_input: Entity<InputState>,
     dictionary_result: String,
+
+    search_regex: bool,
+    toc_search_input: Entity<InputState>,
+    toc_matches: Vec<(String, String, usize)>,
+    /// Cached cover images keyed by path, stored as `data:` URIs for thumbnails.
+    covers: HashMap<String, String>,
 
     fullscreen: bool,
 }
@@ -181,6 +213,8 @@ impl ReaderView {
         let library_search_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Filter library..."));
         let dictionary_input = cx.new(|cx| InputState::new(window, cx).placeholder("Word..."));
+        let toc_search_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Find in TOC..."));
         let annotation_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Add a note..."));
         let mut view = Self {
@@ -219,11 +253,99 @@ impl ReaderView {
             opds_status: String::new(),
             dictionary_input,
             dictionary_result: String::new(),
+            search_regex: false,
+            toc_search_input,
+            toc_matches: Vec::new(),
+            covers: HashMap::new(),
         };
+        if view.show_library {
+            view.load_covers();
+        }
         if let Some(arg) = std::env::args().nth(1) {
             view.open_file(PathBuf::from(arg), window, cx);
         }
         view
+    }
+
+    fn covers_dir() -> PathBuf {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            PathBuf::from(appdata).join("eParna").join("covers")
+        } else {
+            PathBuf::from("eParna_covers")
+        }
+    }
+
+    /// Small FNV-1a hash, used to name cached cover files after the book path.
+    fn simple_hash(s: &str) -> u64 {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for b in s.as_bytes() {
+            h ^= *b as u64;
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        h
+    }
+
+    fn mime_ext(mime: &str) -> &'static str {
+        if mime.contains("jpeg") || mime.contains("jpg") {
+            "jpg"
+        } else if mime.contains("png") {
+            "png"
+        } else if mime.contains("gif") {
+            "gif"
+        } else if mime.contains("webp") {
+            "webp"
+        } else if mime.contains("bmp") {
+            "bmp"
+        } else {
+            "img"
+        }
+    }
+
+    /// Persist the book's cover image to the cache dir and return its path (empty if none).
+    fn cache_cover(&self, book: &ebook_rs::Book, path: &str) -> String {
+        let Some((bytes, mime)) = book.cover_image() else {
+            return String::new();
+        };
+        if bytes.len() > 256 * 1024 {
+            return String::new();
+        }
+        let dir = Self::covers_dir();
+        if std::fs::create_dir_all(&dir).is_err() {
+            return String::new();
+        }
+        let file = dir.join(format!(
+            "{}.{}",
+            Self::simple_hash(path),
+            Self::mime_ext(mime)
+        ));
+        std::fs::write(&file, &bytes)
+            .ok()
+            .map(|_| file.to_string_lossy().to_string())
+            .unwrap_or_default()
+    }
+
+    /// Load cached cover files into memory as data URIs for library thumbnails.
+    fn load_covers(&mut self) {
+        for r in &self.state.recent {
+            if r.cover.is_empty() || self.covers.contains_key(&r.cover) {
+                continue;
+            }
+            let p = PathBuf::from(&r.cover);
+            let Ok(bytes) = std::fs::read(&p) else {
+                continue;
+            };
+            let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("png");
+            let mime = match ext {
+                "jpg" | "jpeg" => "image/jpeg",
+                "gif" => "image/gif",
+                "webp" => "image/webp",
+                "bmp" => "image/bmp",
+                _ => "image/png",
+            };
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+            self.covers
+                .insert(r.cover.clone(), format!("data:{};base64,{}", mime, b64));
+        }
     }
 
     fn theme_colors(&self) -> (Hsla, Hsla) {
@@ -239,14 +361,19 @@ impl ReaderView {
             Ok(book) => {
                 let title = book.metadata().title.clone();
                 window.set_window_title(&format!("{} — eParna", title));
+                let key = path.to_string_lossy().to_string();
+                // Cache the cover for library thumbnails and fingerprint for dedupe.
+                let cover = self.cache_cover(&book, &key);
+                let file_size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                let content_hash = if file_size <= 32 * 1024 * 1024 {
+                    book.fingerprint().content_hash
+                } else {
+                    String::new()
+                };
                 // Build TOC
                 let mut items: Vec<(String, usize)> = Vec::new();
                 for flat in book.flatten_toc() {
-                    let href = flat.href.split('#').next().unwrap_or(&flat.href);
-                    let idx = book.sections().iter().position(|s| {
-                        s.href == href || s.full_path.ends_with(href) || href.ends_with(&s.href)
-                    });
-                    if let Some(i) = idx
+                    if let Some(i) = href_to_index(&book, &flat.href)
                         && !items.iter().any(|(_, j)| *j == i)
                     {
                         items.push((flat.label.clone(), i));
@@ -267,7 +394,6 @@ impl ReaderView {
                 toc_sub.detach();
 
                 // Load annotations & bookmarks for this book
-                let key = path.to_string_lossy().to_string();
                 self.annotations = self
                     .state
                     .annotations
@@ -292,17 +418,41 @@ impl ReaderView {
                     .find(|r| r.path == key)
                     .map(|r| r.favorite)
                     .unwrap_or(false);
-                self.state.recent.retain(|r| r.path != key);
-                self.state.recent.insert(
-                    0,
-                    RecentBook {
-                        path: key.clone(),
-                        title: title.clone(),
-                        section: 0,
-                        opened: now,
-                        favorite: was_fav,
-                    },
-                );
+                // Dedupe by content: the same book opened from another path updates the
+                // existing entry instead of adding a duplicate row.
+                let mut merged = false;
+                if !content_hash.is_empty()
+                    && let Some(pos) = self.state.recent.iter().position(|r| {
+                        !r.content_hash.is_empty()
+                            && r.content_hash == content_hash
+                            && r.path != key
+                    })
+                {
+                    let mut entry = self.state.recent.remove(pos);
+                    entry.path = key.clone();
+                    entry.title = title.clone();
+                    entry.section = 0;
+                    entry.opened = now.clone();
+                    entry.cover = cover.clone();
+                    entry.content_hash = content_hash.clone();
+                    self.state.recent.insert(0, entry);
+                    merged = true;
+                }
+                if !merged {
+                    self.state.recent.retain(|r| r.path != key);
+                    self.state.recent.insert(
+                        0,
+                        RecentBook {
+                            path: key.clone(),
+                            title: title.clone(),
+                            section: 0,
+                            opened: now,
+                            favorite: was_fav,
+                            content_hash,
+                            cover,
+                        },
+                    );
+                }
                 if self.state.recent.len() > 50 {
                     self.state.recent.truncate(50);
                 }
@@ -377,7 +527,11 @@ impl ReaderView {
             return;
         }
         if let Some(book) = &self.book {
-            self.search_results = book.search(&q);
+            self.search_results = if self.search_regex {
+                book.search_regex_limited(&q, Some(500)).unwrap_or_default()
+            } else {
+                book.search_limited(&q, Some(500))
+            };
             if let Some(r) = self.search_results.first() {
                 self.current = r.spine_index;
                 self.load_current(cx);
@@ -461,6 +615,7 @@ impl ReaderView {
 
     fn go_library(&mut self, cx: &mut Context<Self>) {
         self.show_library = true;
+        self.load_covers();
         // save progress
         self.sync_state();
         cx.notify();
@@ -535,7 +690,7 @@ impl ReaderView {
             _ => {}
         }
         v = v.child(div().text_size(px(16.0)).child("Recent books"));
-        for r in recent {
+        for (i, r) in recent.into_iter().enumerate() {
             if self.library_favorites_only && !r.favorite {
                 continue;
             }
@@ -553,6 +708,11 @@ impl ReaderView {
             };
             let sec = r.section;
             let star = if r.favorite { "★" } else { "☆" };
+            let cover_uri = if r.cover.is_empty() {
+                None
+            } else {
+                self.covers.get(&r.cover).cloned()
+            };
             let on_click = cx.listener(move |view, _ev, window, cx| {
                 view.open_file(PathBuf::from(path.clone()), window, cx);
                 view.current = sec;
@@ -565,28 +725,34 @@ impl ReaderView {
                 let p = r.path.clone();
                 cx.listener(move |view, _ev, _w, cx| view.toggle_favorite(p.clone(), cx))
             };
-            v = v.child(
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .child(
-                        Button::new(format!("fav{}", r.path))
-                            .ghost()
-                            .label(star)
-                            .on_click(on_fav),
-                    )
-                    .child(
-                        Button::new(format!("rb{}", r.path))
-                            .label(title)
-                            .on_click(on_click),
-                    )
-                    .child(
-                        Button::new(format!("rm{}", r.path))
-                            .ghost()
-                            .label("×")
-                            .on_click(on_remove),
+            let mut row = h_flex().gap_2().items_center();
+            if let Some(uri) = cover_uri {
+                row = row.child(div().w(px(40.0)).h(px(56.0)).overflow_hidden().child(
+                    TextView::html(
+                        format!("cover{}", i),
+                        format!("<img src=\"{}\" width=\"40\" height=\"56\"/>", uri),
                     ),
-            );
+                ));
+            }
+            row = row
+                .child(
+                    Button::new(format!("fav{}", r.path))
+                        .ghost()
+                        .label(star)
+                        .on_click(on_fav),
+                )
+                .child(
+                    Button::new(format!("rb{}", r.path))
+                        .label(title)
+                        .on_click(on_click),
+                )
+                .child(
+                    Button::new(format!("rm{}", r.path))
+                        .ghost()
+                        .label("×")
+                        .on_click(on_remove),
+                );
+            v = v.child(row);
         }
         if self.state.recent.is_empty() {
             v = v.child("No recent books. Open a file to get started.");
@@ -759,19 +925,60 @@ impl Render for ReaderView {
         // sidebar content
         let sidebar = match self.sidebar_mode {
             SidebarMode::Contents => {
-                if let Some(ts) = &self.toc_state {
-                    v_flex()
-                        .gap_2()
-                        .p_2()
-                        .child(Select::new(ts).placeholder("Contents"))
-                        .child(
-                            div()
-                                .text_size(px(12.0))
-                                .child(format!("{} entries", self.toc_items.len())),
-                        )
+                let on_toc_search = cx.listener(|view, _, _, cx| {
+                    let q = view.toc_search_input.read(cx).value().to_string();
+                    if q.trim().is_empty() {
+                        view.toc_matches.clear();
+                    } else if let Some(book) = &view.book {
+                        view.toc_matches = book
+                            .search_toc(&q)
+                            .into_iter()
+                            .filter_map(|m| {
+                                let idx = href_to_index(book, &m.href)?;
+                                Some((m.label, m.breadcrumb, idx))
+                            })
+                            .collect();
+                    }
+                    cx.notify();
+                });
+                let mut v = v_flex().gap_2().p_2();
+                v = v.child(Input::new(&self.toc_search_input));
+                v = v.child(
+                    Button::new("tocsearch")
+                        .label("Find in TOC")
+                        .on_click(on_toc_search),
+                );
+                if !self.toc_matches.is_empty() {
+                    v = v.child(
+                        div()
+                            .text_size(px(12.0))
+                            .child(format!("{} matches", self.toc_matches.len())),
+                    );
+                    for (i, (label, crumb, idx)) in self.toc_matches.iter().enumerate() {
+                        if i >= 30 {
+                            break;
+                        }
+                        let idx = *idx;
+                        let text = format!("{} — {}", label, crumb);
+                        let on_jump = cx.listener(move |view, _, _, cx| view.jump(idx, cx));
+                        v = v.child(
+                            Button::new(format!("tocm{}", i))
+                                .ghost()
+                                .label(text)
+                                .on_click(on_jump),
+                        );
+                    }
+                } else if let Some(ts) = &self.toc_state {
+                    v = v.child(Select::new(ts).placeholder("Contents"));
+                    v = v.child(
+                        div()
+                            .text_size(px(12.0))
+                            .child(format!("{} entries", self.toc_items.len())),
+                    );
                 } else {
-                    v_flex().p_2().child("No contents")
+                    v = v.child("No contents");
                 }
+                v
             }
             SidebarMode::Bookmarks => {
                 let mut v = v_flex().gap_2().p_2();
@@ -807,6 +1014,19 @@ impl Render for ReaderView {
                 let mut v = v_flex().gap_2().p_2();
                 v = v.child(Input::new(&self.search_input));
                 v = v.child(Button::new("searchbtn").label("Search").on_click(on_search));
+                v = v.child(
+                    Button::new("regex")
+                        .ghost()
+                        .label(if self.search_regex {
+                            "Regex: on"
+                        } else {
+                            "Regex: off"
+                        })
+                        .on_click(cx.listener(|view, _, _, cx| {
+                            view.search_regex = !view.search_regex;
+                            cx.notify();
+                        })),
+                );
                 v = v.child(
                     div()
                         .text_size(px(12.0))
@@ -1045,11 +1265,34 @@ impl Render for ReaderView {
             .child(Button::new("info").label("Info").on_click(cx.listener(
                 |view, _, window, cx| {
                     if let Some(book) = &view.book {
-                        let msg = format!(
-                            "Title: {}\nSections: {}",
-                            book.metadata().title,
-                            book.sections().len()
-                        );
+                        let m = book.metadata();
+                        let mut msg = format!("Title: {}\n", m.title);
+                        if !m.creators.is_empty() {
+                            msg.push_str(&format!("Author: {}\n", m.creators.join(", ")));
+                        }
+                        if let Some(p) = m.publisher() {
+                            msg.push_str(&format!("Publisher: {}\n", p));
+                        }
+                        if !m.language().is_empty() {
+                            msg.push_str(&format!("Language: {}\n", m.language()));
+                        }
+                        if let Some(d) = &m.pub_date {
+                            msg.push_str(&format!("Published: {}\n", d));
+                        }
+                        if !m.subjects.is_empty() {
+                            msg.push_str(&format!("Subjects: {}\n", m.subjects.join(", ")));
+                        }
+                        if let Some(id) = &m.identifier {
+                            msg.push_str(&format!("Identifier: {}\n", id));
+                        }
+                        if let Some(r) = &m.rights {
+                            msg.push_str(&format!("Rights: {}\n", r));
+                        }
+                        if let Some(desc) = &m.description {
+                            let d: String = desc.chars().take(300).collect();
+                            msg.push_str(&format!("\n{}\n", d.trim()));
+                        }
+                        msg.push_str(&format!("\nSections: {}", book.sections().len()));
                         use gpui_kit::component::WindowExt;
                         window.push_notification(
                             gpui_kit::component::notification::Notification::new()
@@ -1060,6 +1303,76 @@ impl Render for ReaderView {
                     }
                 },
             )))
+            .child(
+                Button::new("validate")
+                    .label("Validate")
+                    .on_click(cx.listener(|view, _, window, cx| {
+                        if let Some(book) = &view.book {
+                            let report = book.validate();
+                            let mut msg = format!(
+                                "Valid: {}\nErrors: {}\nWarnings: {}\nInfo: {}\n",
+                                report.is_valid,
+                                report.errors_count,
+                                report.warnings_count,
+                                report.info_count
+                            );
+                            for e in report.errors.iter().take(8) {
+                                msg.push_str(&format!(
+                                    "[{:?}] {}: {}\n",
+                                    e.severity, e.code, e.message
+                                ));
+                            }
+                            use gpui_kit::component::WindowExt;
+                            window.push_notification(
+                                gpui_kit::component::notification::Notification::new()
+                                    .title("Validation")
+                                    .message(msg),
+                                cx,
+                            );
+                        }
+                    })),
+            )
+            .child(
+                Button::new("saveepub")
+                    .label("Save as EPUB")
+                    .on_click(cx.listener(|view, _, window, cx| {
+                        let Some(book) = &view.book else {
+                            return;
+                        };
+                        match book.export_epub3_bytes() {
+                            Ok(bytes) => {
+                                let name = format!(
+                                    "{}.epub",
+                                    book.metadata()
+                                        .title
+                                        .chars()
+                                        .map(|c| {
+                                            if c.is_alphanumeric() || c == ' ' || c == '-' {
+                                                c
+                                            } else {
+                                                '_'
+                                            }
+                                        })
+                                        .collect::<String>()
+                                );
+                                let chosen = rfd::FileDialog::new()
+                                    .set_file_name(&name)
+                                    .add_filter("EPUB", &["epub"])
+                                    .save_file();
+                                if let Some(path) = chosen {
+                                    let ok = std::fs::write(&path, &bytes).is_ok();
+                                    notify_simple(
+                                        window,
+                                        cx,
+                                        if ok { "Saved EPUB" } else { "Write failed" },
+                                        format!("{} ({} bytes)", path.display(), bytes.len()),
+                                    );
+                                }
+                            }
+                            Err(e) => notify_simple(window, cx, "Export failed", e),
+                        }
+                    })),
+            )
             .child(Input::new(&self.goto_input).w(px(80.0)))
             .child(
                 Button::new("go")

@@ -1,6 +1,6 @@
 [package]
 name = "eparna"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 description = "A fast, lightweight, cross-platform ebook reader written in pure Rust"
 license = "MIT"
@@ -11,7 +11,19 @@ categories = ["gui"]
 
 [dependencies]
 gpui-kit = "0.7.3"
-ebook-rs = { version = "0.17.1", default-features = false, features = ["serde", "opds"] }
+ebook-rs = { version = "0.17.1", default-features = false, features = [
+    "serde",
+    "opds",
+    "pdf",
+    "parallel",
+    "mmap",
+    "zstd",
+] }
+base64 = "0.23"
+# Pin: office_oxide 0.1.12+ added a required `defined_names` field to `DocumentIR`,
+# which breaks pdf_oxide 0.3.78's struct literal. 0.1.11 is the last compatible
+# release, so we force it for the whole dependency graph.
+office_oxide = { version = "=0.1.11", default-features = false }
 rfd = "0.15"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
