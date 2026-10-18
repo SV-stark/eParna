@@ -10,8 +10,12 @@ Built on [ebook-rs](https://crates.io/crates/ebook-rs) for multi-format parsing 
 
 ## Features
 
-- **Multi-format support** — EPUB 2/3, MOBI, AZW3, FB2, LIT, CBZ, PDF, ODT, DOCX,
-  RTF, TXT and Markdown, detected automatically from file contents.
+- **Multi-format support** — EPUB 2/3, KEPUB, KFX, MOBI, AZW3, FB2, LIT, CBZ, PDF,
+  ODT, DOCX, RTF, TXT and Markdown, detected automatically from file contents.
+- **Text selection** — drag to select, `Ctrl+C` (or **Copy**) to copy the
+  selection, and **Highlight** to save it.
+- **Highlights & notes** — highlights capture the quoted passage; notes quote
+  whatever is selected. Click any entry to jump back to it. Export as Markdown.
 - **Library view** — recent books with one-click reopen and removal, cover
   thumbnails, favourites, filtering and sorting.
 - **Deduplication** — the same book opened from another path updates the existing
@@ -21,7 +25,8 @@ Built on [ebook-rs](https://crates.io/crates/ebook-rs) for multi-format parsing 
 - **Table of contents** — jump to any chapter via the Contents selector, or deep-search
   the TOC by title with breadcrumbs.
 - **Bookmarks** — toggle and revisit bookmarked sections.
-- **Annotations** — add notes to the current section and browse them.
+- **Reliable resume** — reading position is stored as a Readium CFI, so you return
+  to the same passage even if the book has been re-converted or re-parsed.
 - **In-book search** — full-text search with result snippets, jump-to-result, regex
   mode, and a configurable result cap.
 - **Book info** — author, publisher, language, dates, subjects, identifier, rights
@@ -145,6 +150,7 @@ Or launch without arguments and use the **Open** button to pick a file.
 | `Ctrl+O` | Open a book |
 | `Ctrl+F` | Focus in-book search |
 | `Ctrl+B` | Toggle bookmark on the current section |
+| `Ctrl+C` | Copy the selected text |
 | `Ctrl+L` | Back to the library |
 | `→` / `PageDown` / `Space` | Next section |
 | `←` / `PageUp` | Previous section |
@@ -218,10 +224,13 @@ persistence and annotation export.
 
 Known gaps (mostly limited by the current UI stack):
 
-- Text-selection highlights (multi-colour) and pop-up footnote links.
+- Multi-colour highlights and pop-up footnote links.
 - Text-to-speech.
 - True paginated (page-flip) layout and hyphenation; scrolling is used instead.
 - A grid/covers library view and metadata editing.
+- DRM (Readium LCP). `ebook-rs` refuses to open LCP-protected containers
+  (`EbookError::DrmProtected`) before decryption can be attempted, so supporting
+  purchased Kobo/ownBooks titles needs work upstream in that crate first.
 
 ## Project layout
 

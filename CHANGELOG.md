@@ -7,7 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- Nothing yet.
+- Text selection in the reading view (drag to select), with **Copy** / `Ctrl+C`
+  to copy the selection and **Highlight** to save it as an annotation.
+- Highlights capture the selected passage; notes now quote whatever is
+  selected, so a note is readable against the text it refers to.
+- Annotations are exported as Markdown (`annotations.md`, replacing the old
+  plain-text `annotations.txt`) with block-quoted passages.
+- Clicking an annotation in the sidebar jumps back to its section.
+- Reading position is now persisted as a Readium CFI
+  (`Book::to_readium_locator` / `get_section_by_cfi`), so resume survives a
+  re-parse or a re-converted copy instead of drifting to the wrong section.
+- KFX and KEPUB added to the file-picker filters; `ebook-rs` already
+  auto-detected them (`KfxBook::is_kfx`).
+
+### Notes
+- The claim that gpui-kit had no text-selection support was wrong: `TextView`
+  exposes `.selectable(true)` and `gpui::TextSelection::selected_text()`.
+- DRM (Readium LCP) is still unsupported and is now documented as a known gap:
+  `ebook-rs` returns `EbookError::DrmProtected` when a container contains
+  `META-INF/license.lcpl`, so no passphrase path is reachable from outside.
+- Code signing remains outstanding; it needs a purchased certificate
+  (SSL.com or Azure Artifact Signing) and repository secrets.
 
 ## [0.4.0] - 2026-10-18
 

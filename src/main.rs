@@ -1,6 +1,6 @@
 use base64::Engine as _;
 use ebook_rs::SearchResult;
-use gpui_kit::base::{h_flex, v_flex};
+use gpui_kit::base::{TextSelection, h_flex, v_flex};
 use gpui_kit::component::{
     Root,
     button::{Button, ButtonVariants},
@@ -26,6 +26,9 @@ struct RecentBook {
     /// SHA-256 content hash from `Book::fingerprint()`, used to dedupe the library.
     #[serde(default)]
     content_hash: String,
+    /// Readium CFI of the last read position, so resuming survives a re-parse.
+    #[serde(default)]
+    cfi: String,
     /// Path to a cached cover image (for library thumbnails).
     #[serde(default)]
     cover: String,
@@ -34,8 +37,45 @@ struct RecentBook {
 #[derive(Clone, Serialize, Deserialize, Default)]
 struct Annotation {
     section: usize,
+    /// For a note this is the note text; for a highlight it is empty.
     note: String,
+    /// The passage the highlight covers (or that a note refers to).
+    #[serde(default)]
+    quote: String,
+    /// "note" or "highlight". Older state files have no kind, so treat an
+    /// empty value with a quote as a highlight and otherwise as a note.
+    #[serde(default)]
+    kind: String,
     created: String,
+}
+
+impl Annotation {
+    fn is_highlight(&self) -> bool {
+        match self.kind.as_str() {
+            "highlight" => true,
+            "note" => false,
+            // Legacy entries: a non-empty quote means it was a highlight.
+            _ => !self.quote.is_empty(),
+        }
+    }
+
+    /// Short human label for the sidebar.
+    fn summary(&self) -> String {
+        if self.is_highlight() {
+            let q: String = self.quote.chars().take(60).collect();
+            if self.note.is_empty() {
+                format!("“{}”", q)
+            } else {
+                format!(
+                    "“{}” — {}",
+                    q,
+                    self.note.chars().take(40).collect::<String>()
+                )
+            }
+        } else {
+            self.note.chars().take(60).collect()
+        }
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -151,6 +191,9 @@ struct ReaderView {
     /// Cached cover images keyed by path, stored as `data:` URIs for thumbnails.
     covers: HashMap<String, String>,
 
+    /// Length of the current text selection, for the status line.
+    selection_status: String,
+
     fullscreen: bool,
 }
 
@@ -257,6 +300,7 @@ impl ReaderView {
             toc_search_input,
             toc_matches: Vec::new(),
             covers: HashMap::new(),
+            selection_status: String::new(),
         };
         if view.show_library {
             view.load_covers();
@@ -362,6 +406,13 @@ impl ReaderView {
                 let title = book.metadata().title.clone();
                 window.set_window_title(&format!("{} — eParna", title));
                 let key = path.to_string_lossy().to_string();
+                // Capture the saved position before the recents entry is rewritten.
+                let saved = self
+                    .state
+                    .recent
+                    .iter()
+                    .find(|r| r.path == key)
+                    .map(|r| (r.section, r.cfi.clone()));
                 // Cache the cover for library thumbnails and fingerprint for dedupe.
                 let cover = self.cache_cover(&book, &key);
                 let file_size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
@@ -449,6 +500,7 @@ impl ReaderView {
                             opened: now,
                             favorite: was_fav,
                             content_hash,
+                            cfi: String::new(),
                             cover,
                         },
                     );
@@ -462,9 +514,17 @@ impl ReaderView {
                 self.toc_state = Some(toc_state);
                 self.book = Some(book);
                 self.book_path = Some(path);
-                self.current = 0;
                 self.search_results.clear();
                 self.show_library = false;
+                // Resume: prefer the CFI (survives a re-parse / re-converted
+                // copy), fall back to the raw section index.
+                let len = self.book.as_ref().map(|b| b.sections().len()).unwrap_or(0);
+                let idx = saved
+                    .as_ref()
+                    .and_then(|(_, c)| self.section_from_cfi(c))
+                    .or_else(|| saved.as_ref().map(|(i, _)| *i))
+                    .unwrap_or(0);
+                self.current = idx.min(len.saturating_sub(1));
                 self.load_current(cx);
             }
             Err(e) => {
@@ -485,14 +545,36 @@ impl ReaderView {
                 }
             }
         }
-        // persist progress
+        // persist progress — store a Readium CFI alongside the section index so
+        // resume survives a re-parse or a re-converted copy of the book.
         if let Some(path) = &self.book_path {
             let key = path.to_string_lossy().to_string();
+            let cfi = self
+                .book
+                .as_ref()
+                .and_then(|b| b.to_readium_locator(self.current, 0).ok())
+                .and_then(|l| l.locations.cfi);
             if let Some(r) = self.state.recent.iter_mut().find(|r| r.path == key) {
                 r.section = self.current;
+                if let Some(cfi) = cfi {
+                    r.cfi = cfi;
+                }
             }
             self.save_state();
         }
+    }
+
+    /// Resolve a stored CFI back to a section index for this book.
+    fn section_from_cfi(&self, cfi: &str) -> Option<usize> {
+        let book = self.book.as_ref()?;
+        if cfi.trim().is_empty() {
+            return None;
+        }
+        // Ignore stale CFIs: if the book changed shape, fall back to the index.
+        book.get_section_by_cfi(cfi)
+            .ok()
+            .map(|sec| sec.index)
+            .filter(|i| *i < book.sections().len())
     }
 
     fn next(&mut self, cx: &mut Context<Self>) {
@@ -578,7 +660,70 @@ impl ReaderView {
         }
     }
 
-    fn add_annotation(&mut self, cx: &mut Context<Self>) {
+    fn now_secs() -> String {
+        format!(
+            "{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+        )
+    }
+
+    /// Append an annotation and persist the whole list for this book.
+    fn push_annotation(&mut self, ann: Annotation, cx: &mut Context<Self>) {
+        self.annotations.push(ann);
+        if let Some(path) = &self.book_path {
+            let key = path.to_string_lossy().to_string();
+            self.state.annotations.insert(key, self.annotations.clone());
+            self.save_state();
+        }
+        cx.notify();
+    }
+
+    /// The text currently selected in the reading view, trimmed.
+    fn selected_text(window: &mut Window, cx: &mut App) -> String {
+        TextSelection::selected_text(window, cx).trim().to_string()
+    }
+
+    /// Copy the current selection to the clipboard (`Ctrl+C`).
+    fn copy_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let text = Self::selected_text(window, cx);
+        if text.is_empty() {
+            return;
+        }
+        cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+        self.selection_status = format!("Copied {} characters", text.chars().count());
+        cx.notify();
+    }
+
+    /// Turn the current selection into a highlight anchored to this section.
+    fn highlight_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.book.is_none() {
+            return;
+        }
+        let quote = Self::selected_text(window, cx);
+        if quote.is_empty() {
+            self.selection_status = "Select some text first".into();
+            cx.notify();
+            return;
+        }
+        let chars = quote.chars().count();
+        self.push_annotation(
+            Annotation {
+                section: self.current,
+                note: String::new(),
+                quote,
+                kind: "highlight".into(),
+                created: Self::now_secs(),
+            },
+            cx,
+        );
+        self.selection_status = format!("Highlighted {} characters", chars);
+    }
+
+    /// Add a note, quoting the current selection if there is one.
+    fn add_annotation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.book.is_none() {
             return;
         }
@@ -586,25 +731,17 @@ impl ReaderView {
         if note.trim().is_empty() {
             return;
         }
-        let ann = Annotation {
-            section: self.current,
-            note,
-            created: format!(
-                "{}",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs()
-            ),
-        };
-        self.annotations.push(ann);
-        // persist
-        if let Some(path) = &self.book_path {
-            let key = path.to_string_lossy().to_string();
-            self.state.annotations.insert(key, self.annotations.clone());
-            self.save_state();
-        }
-        cx.notify();
+        let quote = Self::selected_text(window, cx);
+        self.push_annotation(
+            Annotation {
+                section: self.current,
+                note,
+                quote,
+                kind: "note".into(),
+                created: Self::now_secs(),
+            },
+            cx,
+        );
     }
 
     fn change_font(&mut self, delta: f32, cx: &mut Context<Self>) {
@@ -634,7 +771,7 @@ impl ReaderView {
                     "Ebook",
                     &[
                         "epub", "mobi", "azw3", "fb2", "pdf", "txt", "md", "docx", "odt", "rtf",
-                        "cbz", "lit",
+                        "cbz", "lit", "kfx", "kepub",
                     ],
                 )
                 .pick_file()
@@ -889,7 +1026,7 @@ impl Render for ReaderView {
                     "Ebook",
                     &[
                         "epub", "mobi", "azw3", "fb2", "pdf", "txt", "md", "docx", "odt", "rtf",
-                        "cbz", "lit",
+                        "cbz", "lit", "kfx", "kepub",
                     ],
                 )
                 .pick_file()
@@ -901,7 +1038,10 @@ impl Render for ReaderView {
         let on_next = cx.listener(|view, _ev, _w, cx| view.next(cx));
         let on_search = cx.listener(|view, _ev, _w, cx| view.do_search(cx));
         let on_bm = cx.listener(|view, _ev, window, cx| view.toggle_bookmark(window, cx));
-        let on_add_note = cx.listener(|view, _ev, _w, cx| view.add_annotation(cx));
+        let on_add_note = cx.listener(|view, _ev, window, cx| view.add_annotation(window, cx));
+        let on_highlight =
+            cx.listener(|view, _ev, window, cx| view.highlight_selection(window, cx));
+        let on_copy = cx.listener(|view, _ev, window, cx| view.copy_selection(window, cx));
         let on_font_inc = cx.listener(|view, _ev, _w, cx| view.change_font(2.0, cx));
         let on_font_dec = cx.listener(|view, _ev, _w, cx| view.change_font(-2.0, cx));
         let on_theme = cx.listener(|view, _ev, _w, cx| {
@@ -998,12 +1138,26 @@ impl Render for ReaderView {
                         .on_click(on_add_note),
                 );
                 for (i, a) in self.annotations.iter().enumerate() {
-                    v = v.child(div().p_1().border_1().child(format!(
-                        "#{} (sec {}) {}",
+                    let kind = if a.is_highlight() {
+                        "Highlight"
+                    } else {
+                        "Note"
+                    };
+                    let idx = a.section;
+                    let label = format!(
+                        "#{} {} · sec {} · {}",
                         i + 1,
+                        kind,
                         a.section + 1,
-                        a.note.chars().take(60).collect::<String>()
-                    )));
+                        a.summary()
+                    );
+                    let on_jump = cx.listener(move |view, _ev, _w, cx| view.jump(idx, cx));
+                    v = v.child(
+                        Button::new(format!("ann{}", i))
+                            .ghost()
+                            .label(label)
+                            .on_click(on_jump),
+                    );
                 }
                 if self.annotations.is_empty() {
                     v = v.child("No annotations");
@@ -1202,6 +1356,12 @@ impl Render for ReaderView {
             .child(Button::new("prev").label("Prev").on_click(on_prev))
             .child(Button::new("next").label("Next").on_click(on_next))
             .child(Button::new("bm").label("Bookmark").on_click(on_bm))
+            .child(
+                Button::new("highlight")
+                    .label("Highlight")
+                    .on_click(on_highlight),
+            )
+            .child(Button::new("copy").label("Copy").on_click(on_copy))
             .child(Button::new("fi").label("A+").on_click(on_font_inc))
             .child(Button::new("fd").label("A-").on_click(on_font_dec))
             .child(
@@ -1387,11 +1547,44 @@ impl Render for ReaderView {
                 Button::new("export")
                     .label("Export notes")
                     .on_click(cx.listener(|view, _ev, _w, _cx| {
-                        let mut out = String::new();
-                        for a in &view.annotations {
-                            out.push_str(&format!("Section {}: {}\n", a.section + 1, a.note));
+                        // Markdown, so highlights keep their quoted passage and a
+                        // note reads against the text it refers to.
+                        let title = view
+                            .book
+                            .as_ref()
+                            .map(|b| b.metadata().title.clone())
+                            .unwrap_or_else(|| "Untitled".into());
+                        let mut out = format!("# Notes — {}\n\n", title);
+                        if view.annotations.is_empty() {
+                            out.push_str("_No annotations yet._\n");
                         }
-                        let _ = std::fs::write("annotations.txt", out);
+                        for (i, a) in view.annotations.iter().enumerate() {
+                            out.push_str(&format!("## {}\n\n", i + 1));
+                            out.push_str(&format!(
+                                "*Section {} · {} · {}*\n\n",
+                                a.section + 1,
+                                if a.is_highlight() {
+                                    "Highlight"
+                                } else {
+                                    "Note"
+                                },
+                                a.created
+                            ));
+                            if !a.quote.trim().is_empty() {
+                                // Prefix every line so multi-line quotes stay quoted.
+                                for line in a.quote.trim().lines() {
+                                    out.push_str("> ");
+                                    out.push_str(line);
+                                    out.push('\n');
+                                }
+                                out.push('\n');
+                            }
+                            if !a.note.trim().is_empty() {
+                                out.push_str(&a.note);
+                                out.push_str("\n\n");
+                            }
+                        }
+                        let _ = std::fs::write("annotations.md", out);
                     })),
             )
             .child(Button::new("fs").label("Fullscreen").on_click(on_fs))
@@ -1435,7 +1628,13 @@ impl Render for ReaderView {
                 .font_family(self.font_family.clone())
                 .text_align(TextAlign::Left)
                 .overflow_hidden()
-                .child(TextView::html(id.clone(), h).scrollable(true))
+                .child(
+                    TextView::html(id.clone(), h)
+                        // Enables drag-to-select. The selection is read back with
+                        // gpui::TextSelection::selected_text() for copy and highlights.
+                        .selectable(true)
+                        .scrollable(true),
+                )
         };
         let content = if self.two_page {
             h_flex()
@@ -1474,7 +1673,7 @@ impl Render for ReaderView {
                                 "Ebook",
                                 &[
                                     "epub", "mobi", "azw3", "fb2", "pdf", "txt", "md", "docx",
-                                    "odt", "rtf", "cbz", "lit",
+                                    "odt", "rtf", "cbz", "lit", "kfx", "kepub", "kfx", "kepub",
                                 ],
                             )
                             .pick_file()
@@ -1487,6 +1686,7 @@ impl Render for ReaderView {
                         cx.notify();
                     }
                     "b" => view.toggle_bookmark(window, cx),
+                    "c" => view.copy_selection(window, cx),
                     "l" => {
                         window.set_window_title("eParna");
                         view.go_library(cx);
@@ -1517,15 +1717,22 @@ impl Render for ReaderView {
             }
         });
 
-        let root = v_flex()
-            .size_full()
-            .bg(bg)
-            .text_color(fg)
-            .on_key_down(on_key)
-            .child(header)
-            .child(div().px_2().child(Progress::new("prog").value(progress)))
-            .child(div().px_2().text_size(px(12.0)).child(status.clone()))
-            .child(body);
+        let root =
+            v_flex()
+                .size_full()
+                .bg(bg)
+                .text_color(fg)
+                .on_key_down(on_key)
+                .child(header)
+                .child(div().px_2().child(Progress::new("prog").value(progress)))
+                .child(div().px_2().text_size(px(12.0)).child(
+                    if self.selection_status.is_empty() {
+                        status.clone()
+                    } else {
+                        format!("{} — {}", status, self.selection_status)
+                    },
+                ))
+                .child(body);
 
         root.into_any_element()
     }
