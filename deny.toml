@@ -22,8 +22,35 @@ version = 2
 # Unmaintained crates are reported but do not fail the build; bump this to
 # "deny" once we are happy with the current set.
 unmaintained = "workspace"
-# Ignore yanked versions of crates we intentionally still build against.
-ignore = []
+ignore = [
+    # RUSTSEC-2026-0367 / 0368 / 0369 — all three are in the same family:
+    # zip's extraction APIs (`ZipArchive::extract()`, `ZipStreamReader::extract()`)
+    # are unsafe for untrusted archives —
+    #   0367: preserves SUID/SGID/sticky bits (local privesc when a privileged
+    #         process extracts an attacker's archive)
+    #   0368: creates symlinks whose targets are not confined to the
+    #         destination directory (arbitrary file write)
+    #   0369: applies Unix permissions through those symlinks
+    #
+    # We cannot take the upstream fix today because both zip copies are pinned
+    # below the fixed version (>= 9.0.0) by our dependencies:
+    #   ebook-rs 0.17.1      requires zip = "7.0"  -> resolves to 7.4.0
+    #   office_oxide 0.1.11  requires zip = "8.6"  -> resolves to 8.6.0
+    # Both are major-version-pinned, so only an upstream ebook-rs release can
+    # fix this.
+    #
+    # Why it is acceptable in eParna: every one of these lives on the
+    # *extract-to-filesystem* path. eParna only ever reads individual entries
+    # out of ebook containers in memory (EpubArchive::read_bytes); no
+    # attacker-supplied archive is ever extracted onto disk, and eParna never
+    # runs privileged.
+    #
+    # Review trigger: an ebook-rs release that depends on zip >= 9.0.0. Drop
+    # these entries when that lands.
+    { id = "RUSTSEC-2026-0367" },
+    { id = "RUSTSEC-2026-0368" },
+    { id = "RUSTSEC-2026-0369" },
+]
 
 [bans]
 # Duplicate versions are normal in a tree this size (gpui pulls in many
@@ -39,8 +66,13 @@ skip-tree = []
 
 [licenses]
 version = 2
-# Permissive licenses only. The current dependency tree (gpui, ebook-rs, rustls,
-# weezl, resvg, fontations, ...) is Apache-2.0/MIT, so this is comfortable.
+# Permissive licenses only, so a new copyleft dependency cannot slip into the
+# published binary unnoticed.
+#
+# MPL-2.0 is allowed because it is *file-level* copyleft: it only requires that
+# modifications to the MPL-covered files themselves are published. The crates
+# that pull it in (cbindgen, dwrote, option-ext) are transitive dependencies of
+# gpui-kit that we do not control and cannot replace.
 allow = [
     "MIT",
     "Apache-2.0",
@@ -53,8 +85,11 @@ allow = [
     "BSL-1.0",
     "CC0-1.0",
     "Unlicense",
+    "MPL-2.0",
     "Unicode-3.0",
-    "Unicode-DFS-2016",
+    # Used by webpki-roots (Mozilla's CA certificate bundle). Permissive, and
+    # unavoidable: rustls pulls in webpki-roots by default.
+    "CDLA-Permissive-2.0",
 ]
 # Anything we don't recognise is an error, so new deps can't quietly add a
 # copyleft license to a proprietary-friendly project.

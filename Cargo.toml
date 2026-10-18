@@ -2,6 +2,10 @@
 name = "eparna"
 version = "0.4.0"
 edition = "2024"
+# Minimum supported Rust version. Edition 2024 requires Rust 1.85 or newer;
+# declaring it explicitly makes cargo enforce the floor and keeps dependabot,
+# cargo-deny and the CI toolchain honest about it.
+rust-version = "1.85"
 description = "A fast, lightweight, cross-platform ebook reader written in pure Rust"
 authors = ["SV-stark"]
 license = "MIT"
