@@ -104,6 +104,12 @@ target and publishes the artifacts to a GitHub Release. Config lives in
 > produced by a dedicated `appimage` job in `release.yml` that uses
 > `cargo-bundle`. That job is hand-maintained, which is why `allow-dirty = ["ci"]`
 > is set in `dist-workspace.toml` — `dist generate` will not overwrite it.
+>
+> **Note:** cargo-bundle builds a bare AppImage — unlike tools wrapping
+> `linuxdeploy`/`appimagetool`, it does **not** collect shared libraries. The
+> AppImage therefore needs the usual Wayland/X11/Vulkan runtime libraries
+> present on the host system. On a normal desktop distro they already are; on a
+> minimal container, install them or use the `.tar.xz` artifact instead.
 
 ## Continuous integration
 

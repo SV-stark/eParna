@@ -43,6 +43,10 @@ on:
   push:
     tags:
       - '**[0-9]+.[0-9]+.[0-9]+*'
+  # Manual re-run of the whole pipeline for an existing tag. Dispatch against the
+  # tag itself (`gh workflow run release.yml --ref v0.4.0`), otherwise
+  # `github.ref_name` resolves to the branch and dist rejects the version.
+  workflow_dispatch:
 
 jobs:
   # Run 'dist plan' (or host) to determine what tasks we need to do
