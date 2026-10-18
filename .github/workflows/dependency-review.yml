@@ -1,0 +1,34 @@
+# Dependency Review — blocks pull requests that introduce vulnerable,
+# maliciously-typosquatted, or licence-incompatible dependencies.
+#
+# Only runs on PRs: it diffs the PR against its base, so it has nothing to do
+# on a direct push. This is the counterpart to cargo-deny (which audits the
+# whole graph rather than the diff).
+
+name: Dependency Review
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dependency-review:
+    name: dependency-review
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Review dependencies
+        uses: actions/dependency-review-action@v4
+        with:
+          # Fail the PR rather than just annotating it.
+          fail-on-severity: moderate
+          # Don't spend CI minutes on the crates.io index itself.
+          comment-summary-in-pr: on-failure

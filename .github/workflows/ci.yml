@@ -63,7 +63,10 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        # --locked: never silently re-resolve dependencies. If Cargo.toml moved
+        # ahead of Cargo.lock the build fails instead of pulling in whatever is
+        # newest on crates.io (see the office_oxide/pin notes in Cargo.toml).
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
   build:
     name: build (${{ matrix.os }})
@@ -91,4 +94,4 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Build
-        run: cargo build --release
+        run: cargo build --locked --release

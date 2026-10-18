@@ -1,0 +1,55 @@
+# Dependabot keeps the pinned dependencies and the Actions fresh.
+#
+# This matters more than usual here: ebook-rs 0.17.1 depends on
+# `pdf_oxide = "0.3"`, and a patch release of `office_oxide` (0.1.12) shipped a
+# struct change that broke the build. Dependabot surfaces those bumps as PRs
+# where CI can prove they work, instead of them arriving silently.
+
+version: 2
+
+updates:
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "04:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 5
+    # Never bump the office_oxide pin automatically: 0.1.12+ is known broken
+    # against pdf_oxide 0.3.78. See the comment in Cargo.toml.
+    ignore:
+      - dependency-name: "office_oxide"
+    labels:
+      - "dependencies"
+      - "rust"
+    commit-message:
+      prefix: "cargo(deps)"
+    groups:
+      # One PR for the routine patch churn instead of a dozen.
+      cargo-patches:
+        applies-to: version-updates
+        update-types:
+          - "patch"
+      cargo-minor:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "04:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "ci"
+    groups:
+      actions:
+        patterns:
+          - "*"

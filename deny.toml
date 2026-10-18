@@ -1,0 +1,70 @@
+# cargo-deny configuration.
+#
+# Enforced by .github/workflows/deny.yml on every push and PR. This keeps three
+# things honest:
+#   1. no known-vulnerable or unmaintained crates (RustSec advisory DB)
+#   2. no surprising licenses in the published binary
+#   3. no deps pulled from git or an unexpected registry
+
+# Check every target we actually ship, not just the host, so platform-specific
+# dependencies (e.g. gpui-pre-macos) are covered too.
+[graph]
+targets = [
+    "x86_64-pc-windows-msvc",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+]
+all-features = true
+
+[advisories]
+version = 2
+# Unmaintained crates are reported but do not fail the build; bump this to
+# "deny" once we are happy with the current set.
+unmaintained = "workspace"
+# Ignore yanked versions of crates we intentionally still build against.
+ignore = []
+
+[bans]
+# Duplicate versions are normal in a tree this size (gpui pulls in many
+# versions of shared crates); we only care about *wildcards* and explicit bans.
+multiple-versions = "allow"
+wildcards = "deny"
+highlight = "all"
+deny = []
+# These are pure-build-time / platform-only crates that must never ship in the
+# binary. They are allowed here rather than banned because cargo-deny's `bans`
+# section operates on the whole graph.
+skip-tree = []
+
+[licenses]
+version = 2
+# Permissive licenses only. The current dependency tree (gpui, ebook-rs, rustls,
+# weezl, resvg, fontations, ...) is Apache-2.0/MIT, so this is comfortable.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "0BSD",
+    "BSL-1.0",
+    "CC0-1.0",
+    "Unlicense",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+]
+# Anything we don't recognise is an error, so new deps can't quietly add a
+# copyleft license to a proprietary-friendly project.
+confidence-threshold = 0.93
+exceptions = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+# Only crates.io. This is what makes the `office_oxide` pin auditable: nothing
+# can be swapped for a git fork without this check failing.
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

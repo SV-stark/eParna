@@ -1,0 +1,63 @@
+# CodeQL — GitHub's static analysis for Rust.
+#
+# Runs on every push/PR plus a weekly sweep, so newly disclosed queries in
+# existing code get caught too.
+#
+# NOTE: `autobuild` is required because Rust analysis needs a real build to
+# trace dataflow. gpui links against Wayland/X11/Vulkan, so the same system
+# dependencies as ci.yml have to be installed here or the build fails.
+
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '17 4 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (rust)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config clang libclang-dev cmake libssl-dev \
+            libfontconfig1-dev libfreetype6-dev libx11-xcb-dev \
+            libxkbcommon-x11-dev libwayland-dev libxcb1-dev libvulkan-dev \
+            libgl1-mesa-dev libegl1-mesa-dev libdbus-1-dev libatk1.0-dev
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: rust
+          queries: security-and-quality
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: '/language:rust'
