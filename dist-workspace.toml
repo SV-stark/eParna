@@ -1,0 +1,62 @@
+[workspace]
+members = ["cargo:."]
+
+# Config for 'dist'
+[dist]
+# The preferred dist version to use in CI (Cargo.toml SemVer syntax)
+cargo-dist-version = "0.32.0"
+# CI backends to support
+ci = "github"
+# The installers to generate for each app.
+# NOTE: cargo-dist 0.32 does not support nsis/dmg/appimage (dmg is still an
+# open feature request upstream). We therefore use:
+#   - msi        -> the real "setup" on Windows
+#   - powershell -> irm|iex installer on Windows
+#   - pkg        -> the real installer on macOS
+#   - shell      -> curl|sh installer on macOS/Linux
+# The Linux AppImage is produced by a dedicated `appimage` job in
+# .github/workflows/release.yml (see the note there).
+installers = ["msi", "powershell", "shell", "pkg"]
+# Target platforms to build apps for (Rust target-triple syntax)
+targets = [
+    "x86_64-pc-windows-msvc",
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+]
+# Where to host releases
+hosting = "github"
+# Build (not just plan) when a PR targets these branches
+pr-run-mode = "plan"
+# We hand-maintain parts of release.yml (the AppImage job), so stop dist from
+# overwriting/checking it.
+allow-dirty = ["ci"]
+
+# Reverse-DNS identifier + layout used by the macOS .pkg installer.
+[dist.mac-pkg-config]
+identifier = "com.svstark.eparna"
+install-location = "/Applications"
+
+# System packages required to build gpui (Zed's GPUI) on Linux.
+# The Wayland/X11/Vulkan crates used by gpui-pre-linux dlopen their native
+# libraries at runtime, but the linker still needs the -dev packages at build
+# time, and these runtime libs are bundled into the AppImage.
+[dist.dependencies.apt]
+"build-essential" = "*"
+"pkg-config" = "*"
+"clang" = "*"
+"libclang-dev" = "*"
+"cmake" = "*"
+"libssl-dev" = "*"
+"libfontconfig1-dev" = "*"
+"libfreetype6-dev" = "*"
+"libx11-xcb-dev" = "*"
+"libxkbcommon-x11-dev" = "*"
+"libwayland-dev" = "*"
+"libxcb1-dev" = "*"
+"libvulkan-dev" = "*"
+"libgl1-mesa-dev" = "*"
+"libegl1-mesa-dev" = "*"
+"libdbus-1-dev" = "*"
+"libatk1.0-dev" = "*"
+"libfuse2" = "*"

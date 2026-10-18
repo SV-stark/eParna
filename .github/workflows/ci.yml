@@ -1,0 +1,94 @@
+# Continuous integration for eParna.
+#
+# The release workflow (cargo-dist) only *plans* on pull requests, so this
+# workflow is what actually gates merges: formatting, lints and a real build
+# on all three desktop platforms.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+  clippy:
+    name: clippy (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config clang libclang-dev cmake libssl-dev \
+            libfontconfig1-dev libfreetype6-dev libx11-xcb-dev \
+            libxkbcommon-x11-dev libwayland-dev libxcb1-dev libvulkan-dev \
+            libgl1-mesa-dev libegl1-mesa-dev libdbus-1-dev libatk1.0-dev
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+  build:
+    name: build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config clang libclang-dev cmake libssl-dev \
+            libfontconfig1-dev libfreetype6-dev libx11-xcb-dev \
+            libxkbcommon-x11-dev libwayland-dev libxcb1-dev libvulkan-dev \
+            libgl1-mesa-dev libegl1-mesa-dev libdbus-1-dev libatk1.0-dev
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release

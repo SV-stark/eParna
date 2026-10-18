@@ -23,6 +23,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - "Save as EPUB" conversion for any supported format.
 - Enabled additional `ebook-rs` features: `pdf`, `parallel`, `mmap`, `zstd`
   (PDF parsing, parallel ZIP export, memory-mapped I/O, Zstd state caching).
+- Automated cross-platform releases with [cargo-dist](https://axodotdev.github.io/cargo-dist/)
+  (`.github/workflows/release.yml`): Windows MSI, macOS PKG (arm64 + x64),
+  Linux tarball, `curl|sh` / `irm|iex` installers, and SHA-256 checksums.
+- Linux AppImage built by a dedicated job using `cargo-bundle` (cargo-dist has
+  no AppImage support).
+- CI workflow running `rustfmt`, `clippy -D warnings` and a release build on
+  Linux, Windows and macOS.
+- Application icon (SVG-free PNG set) used by the installers.
 
 ### Changed
 - Version bumped to 0.4.0.

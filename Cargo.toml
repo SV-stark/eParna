@@ -3,11 +3,32 @@ name = "eparna"
 version = "0.4.0"
 edition = "2024"
 description = "A fast, lightweight, cross-platform ebook reader written in pure Rust"
+authors = ["SV-stark"]
 license = "MIT"
 repository = "https://github.com/SV-stark/eParna"
 readme = "README.md"
 keywords = ["ebook", "epub", "reader", "gpui", "gui"]
 categories = ["gui"]
+
+[package.metadata.wix]
+upgrade-guid = "DC78F76D-E50A-419E-BF2A-01C67A6F0027"
+path-guid = "7C208294-51BE-4D33-99E1-198F7E36C4FF"
+license = false
+eula = false
+
+# Used by the hand-written AppImage job (cargo-bundle); cargo-dist itself has no
+# AppImage support.
+[package.metadata.bundle]
+name = "eParna"
+identifier = "com.svstark.eparna"
+category = "Book"
+short_description = "A fast, lightweight, cross-platform ebook reader"
+icon = [
+    "assets/icons/32x32.png",
+    "assets/icons/128x128.png",
+    "assets/icons/256x256.png",
+    "assets/icons/512x512.png",
+]
 
 [dependencies]
 gpui-kit = "0.7.3"
@@ -32,3 +53,8 @@ ureq = "3"
 [profile.release]
 opt-level = 3
 lto = true
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
