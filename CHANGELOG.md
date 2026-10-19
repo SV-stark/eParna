@@ -20,6 +20,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - KFX and KEPUB added to the file-picker filters; `ebook-rs` already
   auto-detected them (`KfxBook::is_kfx`).
 
+### Changed
+- **Toolbar restructured.** The primary bar now carries only the reading
+  actions (Open, Library, ‹ ›, Bookmark, Highlight, Copy) together with the
+  `n/N (pct%)` readout, an **Aa** typography toggle and a **⋯** actions
+  toggle. Everything else moved into two collapsible second bars, so the
+  toolbar stopped being a wall of twenty-odd buttons.
+- The typography bar uses labelled `− value +` steppers (Size, Line height,
+  Margin, Text width) plus Typeface / Theme / Pages cycles and
+  **Reset to defaults**. The actions bar holds Book info, Validate book,
+  Save as EPUB, Export notes, go-to-section, Fullscreen and New window.
+  Long reports (book info, validation) now open in a scrollable modal
+  instead of a transient toast.
+- **Library redesigned.** The duplicated "Recent books" heading is gone; the
+  page is now a cover-forward view with a "Continue reading" row of wide
+  tiles for books in progress, followed by an `All books (N)` grid of
+  fixed-size tiles showing cover, title, author and format with a progress
+  bar and Open/Resume, favourite and remove actions. Library search now
+  matches the author as well as the title.
+- Sidebar mode buttons are laid out two per row, and the status line reads
+  `title · author · n/N sections`.
+
+### Fixed
+- The first-run window no longer opens larger than the screen. GPUI's default
+  inherits the display's *device* size while window bounds are logical, which
+  on HiDPI displays made the window wider and taller than the screen and put
+  the right-hand end of the toolbar permanently off-screen.
+- Wide book content can no longer blow the layout out: the content and
+  sidebar panes are given an explicit zero minimum width, so a long line of
+  text no longer forces the whole window wider than its bounds.
+- Opening a book from the library no longer overwrites the CFI the reader
+  just resolved, so **Resume** returns to the saved passage.
+- Images that carry no explicit size are constrained to the text column, so
+  full-bleed figures no longer overflow the page.
+
 ### Notes
 - The claim that gpui-kit had no text-selection support was wrong: `TextView`
   exposes `.selectable(true)` and `gpui::TextSelection::selected_text()`.

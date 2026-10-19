@@ -16,8 +16,10 @@ Built on [ebook-rs](https://crates.io/crates/ebook-rs) for multi-format parsing 
   selection, and **Highlight** to save it.
 - **Highlights & notes** — highlights capture the quoted passage; notes quote
   whatever is selected. Click any entry to jump back to it. Export as Markdown.
-- **Library view** — recent books with one-click reopen and removal, cover
-  thumbnails, favourites, filtering and sorting.
+- **Library view** — a cover-forward grid of books with a "Continue reading" row
+  for works in progress; each tile shows cover, title, author and format with a
+  progress bar and Open/Resume, favourite and remove actions. Filtering, sorting
+  and one-click reopen included.
 - **Deduplication** — the same book opened from another path updates the existing
   entry (content-hash based) instead of adding a duplicate.
 - **GPU-accelerated rendering** — smooth scrolling and responsive navigation powered by gpui.
@@ -33,10 +35,14 @@ Built on [ebook-rs](https://crates.io/crates/ebook-rs) for multi-format parsing 
   and description, plus a structural validation report.
 - **Save as EPUB** — convert any supported format to a clean EPUB 3 file.
 - **Themes** — Light, Dark, and Sepia.
-- **Typography & layout** — adjustable font size, font family, line height, margins, max content width, two-page view.
+- **Typography & layout** — a dedicated **Aa** panel with labelled `− value +`
+  steppers for font size, line height, margin and text width, plus typeface,
+  theme and one/two-page toggles and "Reset to defaults"; a **⋯** panel holds
+  the long-tail actions (book info, validation, Save as EPUB, note export,
+  go-to-section, fullscreen, new window).
 - **Footnotes** — browse footnotes for the current section.
 - **Dictionary & Wikipedia** — look up a word or topic without leaving the book.
-- **Library tools** — filter and sort recent books, mark favourites, OPDS catalog browsing/download.
+- **OPDS catalogues** — browse and download from OPDS feeds.
 - **Multiple windows** — open additional reader windows.
 - **Reading progress** — progress bar, percentage, and `n/total` section indicator.
 - **Fullscreen** — toggle fullscreen reading.
@@ -227,7 +233,7 @@ Known gaps (mostly limited by the current UI stack):
 - Multi-colour highlights and pop-up footnote links.
 - Text-to-speech.
 - True paginated (page-flip) layout and hyphenation; scrolling is used instead.
-- A grid/covers library view and metadata editing.
+- Metadata editing (the library is a cover grid, but book metadata is read-only).
 - DRM (Readium LCP). `ebook-rs` refuses to open LCP-protected containers
   (`EbookError::DrmProtected`) before decryption can be attempted, so supporting
   purchased Kobo/ownBooks titles needs work upstream in that crate first.
