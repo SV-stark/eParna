@@ -42,6 +42,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `title · author · n/N sections`.
 
 ### Fixed
+- Cover pages now render. Many EPUBs set their cover as
+  `<svg><image xlink:href="cover.jpeg"/></svg>`, which the HTML renderer cannot
+  draw; such `<image>` elements are now rewritten to `<img>` with the resource
+  inlined as a `data:` URI.
+- The document head no longer leaks into the page: a book whose XHTML carries
+  `<title>Unknown</title>` was showing the word "Unknown" as the first line of
+  every section, because the renderer treats every element's text as body copy.
+  `<head>` and `<title>` blocks are now stripped before rendering.
 - The first-run window no longer opens larger than the screen. GPUI's default
   inherits the display's *device* size while window bounds are logical, which
   on HiDPI displays made the window wider and taller than the screen and put

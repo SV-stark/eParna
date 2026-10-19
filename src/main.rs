@@ -1,5 +1,5 @@
 use base64::Engine as _;
-use ebook_rs::SearchResult;
+use ebook_rs::{Book, SearchResult};
 use gpui_kit::base::{TextSelection, h_flex, v_flex};
 use gpui_kit::component::{
     Root,
@@ -587,7 +587,7 @@ impl ReaderView {
         if let Some(book) = &self.book {
             match book.get_section(self.current) {
                 Ok(sec) => {
-                    self.html = sec.processed_html.clone();
+                    self.html = prepare_section_html(&sec.processed_html, book, &sec.full_path);
                 }
                 Err(e) => {
                     self.html = format!("<p>Error: {}</p>", e);
@@ -1349,6 +1349,136 @@ fn constrain_images(html: &str, column_px: f32) -> String {
     }
     out.push_str(rest);
     out
+}
+
+/// Turn a section's `processed_html` into something the renderer can show.
+///
+/// Two things need help: the document `<head>` has to go (the renderer treats
+/// every element's text as body copy, so a `<title>Unknown</title>` shows up as
+/// the first line of the page), and SVG `<image>` elements have to become
+/// `<img>` with inlined data URIs.
+fn prepare_section_html(html: &str, book: &Book, section_path: &str) -> String {
+    let body = strip_element(&strip_element(html, "head"), "title");
+    inline_svg_images(&body, book, section_path)
+}
+
+/// Remove every `<tag …>…</tag>` block, keeping everything around it.
+fn strip_element(html: &str, tag: &str) -> String {
+    let open = format!("<{tag}");
+    let close = format!("</{tag}>");
+    if !html.contains(&open) {
+        return html.to_string();
+    }
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    while let Some(start) = rest.find(&open) {
+        let tail = &rest[start..];
+        // Guard against prefixes: `<header>` is not `<head>`.
+        let after = tail[open.len()..].chars().next();
+        let is_tag = matches!(after, Some(c) if c == '>' || c == '/' || c.is_whitespace());
+        if !is_tag {
+            out.push_str(&rest[..start + open.len()]);
+            rest = &tail[open.len()..];
+            continue;
+        }
+        out.push_str(&rest[..start]);
+        match tail.find(&close) {
+            Some(end) => rest = &tail[end + close.len()..],
+            // Unclosed: drop the opening tag only.
+            None => match tail.find('>') {
+                Some(gt) => rest = &tail[gt + 1..],
+                None => rest = "",
+            },
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Rewrite SVG `<image>` elements into plain `<img>` tags with the referenced
+/// resource inlined as a `data:` URI.
+///
+/// Cover pages in many EPUBs are a single `<svg><image xlink:href="cover.jpeg"/></svg>`.
+/// GPUI's HTML renderer only understands `<img src=…>`, and `ebook-rs` inlines
+/// `src`/`href` on `<img>` and `<link>` only, so without this the cover page
+/// renders blank.
+fn inline_svg_images(html: &str, book: &Book, section_path: &str) -> String {
+    if !html.contains("<image") {
+        return html.to_string();
+    }
+    let dir = section_path
+        .rfind('/')
+        .map(|i| &section_path[..i])
+        .unwrap_or("");
+    let mut out = String::with_capacity(html.len() + 256);
+    let mut rest = html;
+    while let Some(pos) = rest.find("<image") {
+        out.push_str(&rest[..pos]);
+        let tail = &rest[pos..];
+        let end = tail.find('>').map(|i| i + 1).unwrap_or(tail.len());
+        let tag = &tail[..end];
+        match image_href(tag).and_then(|href| image_resource(book, dir, href)) {
+            Some((bytes, mime)) => {
+                let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                out.push_str(&format!(
+                    "<img src=\"data:{mime};base64,{b64}\" style=\"width:100%\" />"
+                ));
+            }
+            // Leave it untouched: the renderer will skip it, exactly as before.
+            None => out.push_str(tag),
+        }
+        rest = &tail[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Pull the source out of an `<image>` tag, whichever spelling the book uses.
+fn image_href(tag: &str) -> Option<&str> {
+    for attr in ["xlink:href=\"", "xlink:href='", "href=\"", "href='"] {
+        if let Some(start) = tag.find(attr) {
+            let quote = attr.chars().last()?;
+            let from = start + attr.len();
+            if let Some(len) = tag[from..].find(quote) {
+                return Some(&tag[from..from + len]);
+            }
+        }
+    }
+    None
+}
+
+/// Read an `<image>` reference out of the archive, resolving it against the
+/// section's directory first (EPUBs freely mix `cover.jpeg`, `./cover.jpeg`
+/// and `../images/cover.jpeg`).
+fn image_resource(book: &Book, dir: &str, href: &str) -> Option<(Vec<u8>, &'static str)> {
+    if href.starts_with("data:") || href.starts_with("http") {
+        return None;
+    }
+    for candidate in [resolve_relative(dir, href), href.to_string()] {
+        if let Ok(hit) = book.get_resource_bytes(&candidate) {
+            return Some(hit);
+        }
+    }
+    None
+}
+
+/// Join a relative reference onto a directory, collapsing `.` and `..`.
+fn resolve_relative(dir: &str, href: &str) -> String {
+    let mut parts: Vec<&str> = if href.starts_with('/') {
+        Vec::new()
+    } else {
+        dir.split('/').filter(|s| !s.is_empty()).collect()
+    };
+    for seg in href.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            other => parts.push(other),
+        }
+    }
+    parts.join("/")
 }
 
 /// Escape plain text for rendering inside the HTML `TextView`, keeping the
@@ -2173,7 +2303,10 @@ impl Render for ReaderView {
         let html2 = if self.two_page {
             if let Some(book) = &self.book {
                 book.get_section(self.current + 1)
-                    .map(|s| constrain_images(&s.processed_html, column_px))
+                    .map(|s| {
+                        let prepared = prepare_section_html(&s.processed_html, book, &s.full_path);
+                        constrain_images(&prepared, column_px)
+                    })
                     .unwrap_or_default()
             } else {
                 String::new()
@@ -2377,8 +2510,8 @@ impl Render for ReaderView {
 fn window_options() -> WindowOptions {
     WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds {
-            origin: point(px(60.0), px(60.0)),
-            size: size(px(1000.0), px(660.0)),
+            origin: point(px(60.0), px(40.0)),
+            size: size(px(1000.0), px(600.0)),
         })),
         window_min_size: Some(size(px(420.0), px(320.0))),
         ..Default::default()
