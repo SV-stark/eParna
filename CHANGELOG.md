@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-19
+
 ### Added
 - Text selection in the reading view (drag to select), with **Copy** / `Ctrl+C`
   to copy the selection and **Highlight** to save it as an annotation.
@@ -40,6 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   matches the author as well as the title.
 - Sidebar mode buttons are laid out two per row, and the status line reads
   `title · author · n/N sections`.
+- Version bumped to 0.5.0.
 
 ### Fixed
 - Cover pages now render. Many EPUBs set their cover as
