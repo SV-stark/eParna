@@ -6,6 +6,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-19
+
+### Added
+- Keyboard shortcuts: `b` toggles a bookmark, `t`/`s`/`a` switch the sidebar
+  to Contents/Search/Annotations (in addition to the existing arrows, Home/End,
+  F11, +/-, Ctrl+O/F/B/C/L).
+- Custom theme: a "Custom" theme option with user-chosen background and
+  foreground hex colours (editable in the Typography panel).
+- Custom theme: a "Custom" theme option with user-chosen background and
+  foreground hex colours (editable in the Typography panel).
+- Reading statistics: the status line now shows the current section's word
+  count and the session reading time (minutes).
+- Nested TOC display: child entries are indented in the TOC selector so the
+  hierarchy survives the flat dropdown.
+- Print page numbers: when the book has a page list, the current print page
+  ("p. N") is shown in the status line.
+- Image lightbox: clicking an image in the reading view opens a modal
+  showing the full-size image (images are wrapped in `img:` links in
+  `prepare_section_html` since GPUI has no dedicated image-click handler).
+- Footnote pop-ups: clicking a footnote reference in the reading view opens
+  a modal showing the note (via GPUI's `on_link_click` on the HTML
+  `TextView`). Cross-document footnote links navigate to the target section.
+- Offline StarDict dictionary support: a pure-Rust, MIT-licensed reader for
+  the StarDict format (`.ifo`/`.idx`/`.dict` or `.dict.dz`), loaded via a
+  "Load StarDict" button in the Dictionary sidebar. Lookup prefers the
+  offline dictionary and falls back to the online dictionary API. (The
+  `stardict` crate is GPL-2.0 and incompatible with eparna's MIT licence,
+  so the format is parsed directly.)
+- LCP/DRM passphrase prompt: opening a protected book now shows a modal
+  asking for the passphrase and retries via
+  `Book::from_bytes_with_passphrase` (ebook-rs 0.17.3). Previously the error
+  was swallowed.
+
+### Changed
+- Reading progress is now char-accurate: the progress bar and the persisted
+  CFI use the Readium location map (`locations_from_sections` /
+  `percentage_from_cfi`) instead of a coarse section-count ratio. Resume uses
+  `get_section_and_offset_by_cfi` so the in-section offset is preserved in
+  the CFI (scroll-to-offset is deferred until GPUI exposes programmatic
+  scroll for HTML views).
+- Upgraded `ebook-rs` `0.17.1` → `0.17.3`: SVG-wrapped covers are now
+  inlined upstream, `<title>` is stripped from `processed_html`, CSS is
+  available as a merged `<style>` block (`AssetDeliveryStrategy::InlinedStyle`
+  + `Book::get_merged_stylesheet`), the DOM layer gained a selector engine
+  with computed styles (`EbookDomTree::query_selector_all` / `style_of`), LCP
+  books can be opened with a passphrase
+  (`from_bytes_with_title_and_passphrase`), and CFI offsets are preserved
+  (`Book::get_section_and_offset_by_cfi` / `Book::resolve_cfi`). The
+  eparna-side SVG/`<title>` workarounds in `prepare_section_html` are now
+  redundant but harmless.
+- Bumped MSRV from `1.85` → `1.90` (edition 2024; `ebook-rs 0.17.3`
+  requires Rust 1.88 and the locked graph, e.g. `ordered-float 5.5.0`,
+  requires Rust 1.90). `rust-version` in `Cargo.toml`, the README install
+  note, and `cargo-deny` are kept in sync.
+- `zip` moved `7.4.0` → `9.0.5` in the direct dependency (ebook-rs 0.17.3),
+  deduplicating the `pdf_oxide`/`office_oxide` transitive graph. The
+  RUSTSEC-2026-0367/0368/0369 ignores are retained because `office_oxide
+  0.1.11` (pinned for `pdf_oxide 0.3.78`) still pulls `zip 8.6.0`.
+
 ## [0.5.0] - 2026-10-19
 
 ### Added

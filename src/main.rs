@@ -102,6 +102,8 @@ struct PersistedState {
     two_page: bool,
     theme: String,
     dark: bool,
+    custom_bg: String,
+    custom_fg: String,
 }
 
 impl Default for PersistedState {
@@ -118,6 +120,8 @@ impl Default for PersistedState {
             two_page: false,
             theme: "Light".into(),
             dark: false,
+            custom_bg: "#ffffff".into(),
+            custom_fg: "#202020".into(),
         }
     }
 }
@@ -184,6 +188,10 @@ struct ReaderView {
     two_page: bool,
     theme: String,
     dark: bool,
+    custom_bg: String,
+    custom_fg: String,
+    custom_bg_input: Entity<InputState>,
+    custom_fg_input: Entity<InputState>,
 
     library_search_input: Entity<InputState>,
     library_sort: usize,
@@ -194,6 +202,8 @@ struct ReaderView {
 
     dictionary_input: Entity<InputState>,
     dictionary_result: String,
+    stardict: Option<StarDict>,
+    stardict_name: String,
 
     search_regex: bool,
     toc_search_input: Entity<InputState>,
@@ -204,11 +214,20 @@ struct ReaderView {
     /// Length of the current text selection, for the status line.
     selection_status: String,
 
+    /// When the current reading session started, for reading-time stats.
+    reading_start: std::time::Instant,
+
     /// Which secondary toolbar panel is open, if any. Mutually exclusive.
     panel: Panel,
 
     /// Modal overlay (book info, validation report, ...).
     modal: Option<Modal>,
+
+    /// LCP/DRM passphrase prompt state.
+    passphrase_pending: Option<PathBuf>,
+    passphrase_input: Entity<InputState>,
+    passphrase_error: String,
+    passphrase_modal: bool,
 
     fullscreen: bool,
 }
@@ -227,6 +246,129 @@ enum Panel {
 struct Modal {
     title: String,
     body: String,
+    /// Optional image (data: URI) to render in the modal body, e.g. for an
+    /// image lightbox. When set, `body` is ignored.
+    image: Option<String>,
+}
+
+/// Minimal pure-Rust StarDict reader (MIT-licensed; the `stardict` crate is
+/// GPL-2.0, which is incompatible with eparna's MIT licence, so we parse the
+/// format ourselves). Format: .ifo (metadata), .idx (sorted word index with
+/// 4-byte big-endian offset+size), .dict (or .dict.dz gzipped definitions).
+struct StarDict {
+    entries: Vec<(String, u64, u32)>, // (word, offset in dict, size)
+    dict: Vec<u8>,
+}
+
+impl StarDict {
+    fn load(ifo_path: &std::path::Path) -> Result<Self, String> {
+        let dir = ifo_path.parent().unwrap_or(std::path::Path::new("."));
+        let stem = ifo_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .ok_or("bad ifo filename")?
+            .to_string();
+
+        // Parse .ifo for wordcount (sanity) — format is key=value lines.
+        let _ifo = std::fs::read_to_string(ifo_path).map_err(|e| e.to_string())?;
+
+        // Read .idx
+        let idx_path = dir.join(format!("{}.idx", stem));
+        let idx_bytes = std::fs::read(&idx_path).map_err(|e| e.to_string())?;
+        let mut entries: Vec<(String, u64, u32)> = Vec::new();
+        let mut i = 0usize;
+        while i < idx_bytes.len() {
+            let start = i;
+            while i < idx_bytes.len() && idx_bytes[i] != 0 {
+                i += 1;
+            }
+            if i >= idx_bytes.len() {
+                break;
+            }
+            let word = String::from_utf8_lossy(&idx_bytes[start..i]).to_string();
+            i += 1; // skip null terminator
+            if i + 8 > idx_bytes.len() {
+                break;
+            }
+            let offset = u32::from_be_bytes([
+                idx_bytes[i],
+                idx_bytes[i + 1],
+                idx_bytes[i + 2],
+                idx_bytes[i + 3],
+            ]) as u64;
+            let size = u32::from_be_bytes([
+                idx_bytes[i + 4],
+                idx_bytes[i + 5],
+                idx_bytes[i + 6],
+                idx_bytes[i + 7],
+            ]);
+            i += 8;
+            entries.push((word, offset, size));
+        }
+
+        // Read .dict (or .dict.dz)
+        let dz_path = dir.join(format!("{}.dict.dz", stem));
+        let dict_path = dir.join(format!("{}.dict", stem));
+        let dict = if dz_path.exists() {
+            use flate2::read::GzDecoder;
+            use std::io::Read;
+            let f = std::fs::File::open(&dz_path).map_err(|e| e.to_string())?;
+            let mut dec = GzDecoder::new(f);
+            let mut buf = Vec::new();
+            dec.read_to_end(&mut buf).map_err(|e| e.to_string())?;
+            buf
+        } else {
+            std::fs::read(&dict_path).map_err(|e| e.to_string())?
+        };
+
+        Ok(StarDict { entries, dict })
+    }
+
+    fn lookup(&self, word: &str) -> Option<String> {
+        // StarDict indices are sorted; try exact then case-insensitive.
+        let mut idx = self
+            .entries
+            .binary_search_by(|e| e.0.as_str().cmp(word))
+            .ok();
+        if idx.is_none() {
+            let lower = word.to_lowercase();
+            idx = self
+                .entries
+                .binary_search_by(|e| e.0.to_lowercase().as_str().cmp(lower.as_str()))
+                .ok();
+        }
+        let &(_, offset, size) = self.entries.get(idx?)?;
+        let start = offset as usize;
+        let end = start.saturating_add(size as usize);
+        if end > self.dict.len() || start > self.dict.len() {
+            return None;
+        }
+        let raw = &self.dict[start..end];
+        // Definitions may be plain text or HTML depending on sametypesequence;
+        // strip a trailing NUL and decode lossily.
+        let text = String::from_utf8_lossy(raw)
+            .trim_end_matches('\0')
+            .to_string();
+        // Light HTML-tag stripping for readability.
+        let mut out = String::with_capacity(text.len());
+        let mut in_tag = false;
+        for c in text.chars() {
+            match c {
+                '<' => in_tag = true,
+                '>' => {
+                    in_tag = false;
+                }
+                _ if !in_tag => out.push(c),
+                _ => {}
+            }
+        }
+        let cleaned = out.trim().to_string();
+        if cleaned.is_empty() {
+            Some(text)
+        } else {
+            Some(cleaned)
+        }
+    }
 }
 
 impl ReaderView {
@@ -274,6 +416,8 @@ impl ReaderView {
         self.state.two_page = self.two_page;
         self.state.theme = self.theme.clone();
         self.state.dark = self.dark;
+        self.state.custom_bg = self.custom_bg.clone();
+        self.state.custom_fg = self.custom_fg.clone();
         self.save_state();
     }
 
@@ -292,6 +436,10 @@ impl ReaderView {
             cx.new(|cx| InputState::new(window, cx).placeholder("Find in TOC..."));
         let annotation_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Add a note..."));
+        let passphrase_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Passphrase..."));
+        let custom_bg_input = cx.new(|cx| InputState::new(window, cx).placeholder("#ffffff"));
+        let custom_fg_input = cx.new(|cx| InputState::new(window, cx).placeholder("#202020"));
         let mut view = Self {
             font_size: st.font_size,
             line_height: st.line_height,
@@ -302,6 +450,10 @@ impl ReaderView {
             two_page: st.two_page,
             theme: st.theme.clone(),
             dark: st.dark,
+            custom_bg: st.custom_bg.clone(),
+            custom_fg: st.custom_fg.clone(),
+            custom_bg_input,
+            custom_fg_input,
             state: st,
             config_path: Self::config_path(),
             show_library: true,
@@ -328,11 +480,18 @@ impl ReaderView {
             opds_status: String::new(),
             dictionary_input,
             dictionary_result: String::new(),
+            stardict: None,
+            stardict_name: String::new(),
             search_regex: false,
             toc_search_input,
+            passphrase_pending: None,
+            passphrase_input,
+            passphrase_error: String::new(),
+            passphrase_modal: false,
             toc_matches: Vec::new(),
             covers: HashMap::new(),
             selection_status: String::new(),
+            reading_start: std::time::Instant::now(),
             panel: Panel::None,
             modal: None,
         };
@@ -426,17 +585,64 @@ impl ReaderView {
         }
     }
 
+    /// Parse a "#rrggbb" hex color into an Hsla, falling back to the default on
+    /// malformed input. Used by the custom theme.
+    fn parse_hex_color(s: &str) -> Option<Hsla> {
+        let s = s.trim().trim_start_matches('#');
+        if s.len() != 6 {
+            return None;
+        }
+        let r = u8::from_str_radix(&s[0..2], 16).ok()?;
+        let g = u8::from_str_radix(&s[2..4], 16).ok()?;
+        let b = u8::from_str_radix(&s[4..6], 16).ok()?;
+        Some(rgb(u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b)).into())
+    }
+
     fn theme_colors(&self) -> (Hsla, Hsla) {
         match self.theme.as_str() {
             "Dark" => (rgb(0x1e1e1e).into(), rgb(0xe0e0e0).into()),
             "Sepia" => (rgb(0xf4ecd8).into(), rgb(0x5b4636).into()),
+            "Custom" => (
+                Self::parse_hex_color(&self.custom_bg).unwrap_or(rgb(0xffffff).into()),
+                Self::parse_hex_color(&self.custom_fg).unwrap_or(rgb(0x202020).into()),
+            ),
             _ => (rgb(0xffffff).into(), rgb(0x202020).into()),
         }
     }
 
     fn open_file(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
-        match ebook_rs::Book::from_file(&path) {
-            Ok(book) => {
+        self.open_file_inner(path, None, window, cx);
+    }
+
+    fn open_file_inner(
+        &mut self,
+        path: PathBuf,
+        passphrase: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let book_result = if let Some(pp) = &passphrase {
+            std::fs::read(&path)
+                .map_err(|e| format!("io: {e}"))
+                .and_then(|bytes| {
+                    let title = path.file_stem().and_then(|s| s.to_str()).unwrap_or("eBook");
+                    ebook_rs::Book::from_bytes_with_passphrase(&bytes, title, pp)
+                        .map_err(|e| e.to_string())
+                })
+        } else {
+            ebook_rs::Book::from_file(&path).map_err(|e| e.to_string())
+        };
+        match book_result {
+            Ok(mut book) => {
+                if book.locations().total_locations == 0 {
+                    book.generate_locations(1000);
+                }
+                // Make sure the location map is populated so char-accurate
+                // progress works even for formats that don't generate it at
+                // load time (e.g. lazy-loaded books).
+                if book.locations().total_locations == 0 {
+                    book.generate_locations(1000);
+                }
                 let title = book.metadata().title.clone();
                 window.set_window_title(&format!("{} — eParna", title));
                 // Denormalised for the library grid so it never re-parses a book
@@ -465,12 +671,15 @@ impl ReaderView {
                     String::new()
                 };
                 // Build TOC
+                // Keep the TOC's nesting visible even though the selector is
+                // flat: indent child entries so the hierarchy survives.
                 let mut items: Vec<(String, usize)> = Vec::new();
                 for flat in book.flatten_toc() {
                     if let Some(i) = href_to_index(&book, &flat.href)
                         && !items.iter().any(|(_, j)| *j == i)
                     {
-                        items.push((flat.label.clone(), i));
+                        let label = format!("{}{}", "  ".repeat(flat.depth), flat.label);
+                        items.push((label, i));
                     }
                 }
                 let labels: Vec<String> = items.iter().map(|(l, _)| l.clone()).collect();
@@ -563,6 +772,7 @@ impl ReaderView {
                 self.toc_state = Some(toc_state);
                 self.book = Some(book);
                 self.book_path = Some(path);
+                self.reading_start = std::time::Instant::now();
                 self.search_results.clear();
                 self.show_library = false;
                 // Resume: prefer the CFI (survives a re-parse / re-converted
@@ -577,7 +787,20 @@ impl ReaderView {
                 self.load_current(cx);
             }
             Err(e) => {
-                let _ = e;
+                let msg = e;
+                if (msg.to_lowercase().contains("drm")
+                    || msg.to_lowercase().contains("passphrase")
+                    || msg.to_lowercase().contains("lcp"))
+                    && passphrase.is_none()
+                {
+                    self.passphrase_pending = Some(path.clone());
+                    self.passphrase_error = msg;
+                    self.passphrase_modal = true;
+                } else if passphrase.is_some() {
+                    // Wrong passphrase or other failure after a retry.
+                    self.passphrase_error = msg;
+                    self.passphrase_modal = true;
+                }
             }
         }
         cx.notify();
@@ -619,10 +842,14 @@ impl ReaderView {
         if cfi.trim().is_empty() {
             return None;
         }
-        // Ignore stale CFIs: if the book changed shape, fall back to the index.
-        book.get_section_by_cfi(cfi)
+        // Preserve the in-section offset via the 0.17.3 helper (the old
+        // `get_section_by_cfi` discarded it). We can't scroll the GPUI
+        // TextView to that offset yet (HTML views have no programmatic
+        // scroll/reveal), so it is retained in the CFI for a future scroll
+        // implementation; resume still lands on the correct section.
+        book.get_section_and_offset_by_cfi(cfi)
             .ok()
-            .map(|sec| sec.index)
+            .map(|(sec, _offset)| sec.index)
             .filter(|i| *i < book.sections().len())
     }
 
@@ -1101,6 +1328,7 @@ impl ReaderView {
         self.modal = Some(Modal {
             title: title.into(),
             body,
+            image: None,
         });
         self.panel = Panel::None;
         cx.notify();
@@ -1108,6 +1336,93 @@ impl ReaderView {
 
     fn close_modal(&mut self, cx: &mut Context<Self>) {
         self.modal = None;
+        cx.notify();
+    }
+
+    /// Handle a click on an in-text link (footnote reference, image zoom, or
+    /// section link).
+    fn handle_link_click(&mut self, url: &str, cx: &mut Context<Self>) {
+        // Image lightbox: url is "img:<data-uri>".
+        if let Some(src) = url.strip_prefix("img:") {
+            self.modal = Some(Modal {
+                title: "Image".into(),
+                body: String::new(),
+                image: Some(src.to_string()),
+            });
+            cx.notify();
+            return;
+        }
+        // Footnote pop-up: url is "#id" or "path.xhtml#id".
+        let (path_part, frag) = match url.split_once('#') {
+            Some((p, f)) => (p, Some(f)),
+            None => (url, None),
+        };
+        if let Some(frag) = frag
+            && let Some(book) = &self.book
+        {
+            // Try the current section first.
+            let mut found: Option<ebook_rs::footnote::Footnote> = None;
+            if let Ok(sec) = book.get_section(self.current) {
+                found = sec
+                    .extract_footnotes()
+                    .into_iter()
+                    .find(|f| f.target_id == frag || f.id == frag || f.href.ends_with(frag));
+            }
+            // Cross-document: resolve the section and look there.
+            if found.is_none()
+                && !path_part.is_empty()
+                && let Ok(sec) = book.get_section_by_href(path_part)
+                && let Ok(sec) = book.get_section(sec.index)
+            {
+                found = sec
+                    .extract_footnotes()
+                    .into_iter()
+                    .find(|f| f.target_id == frag || f.id == frag);
+            }
+            if let Some(f) = found {
+                self.modal = Some(Modal {
+                    title: format!("Footnote {}", f.label),
+                    body: if f.plain_text.trim().is_empty() {
+                        f.html_content.clone()
+                    } else {
+                        f.plain_text.clone()
+                    },
+                    image: None,
+                });
+                cx.notify();
+                return;
+            }
+        }
+        // Otherwise treat as a section navigation link.
+        if !path_part.is_empty()
+            && let Some(book) = &self.book
+            && let Ok(sec) = book.get_section_by_href(path_part)
+        {
+            let idx = sec.index;
+            if idx < book.sections().len() {
+                self.current = idx;
+                self.load_current(cx);
+                cx.notify();
+            }
+        }
+    }
+
+    fn submit_passphrase(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let pp = self.passphrase_input.read(cx).value().to_string();
+        if pp.trim().is_empty() {
+            return;
+        }
+        if let Some(path) = self.passphrase_pending.clone() {
+            self.passphrase_modal = false;
+            self.open_file_inner(path, Some(pp), window, cx);
+            cx.notify();
+        }
+    }
+
+    fn cancel_passphrase(&mut self, cx: &mut Context<Self>) {
+        self.passphrase_pending = None;
+        self.passphrase_error.clear();
+        self.passphrase_modal = false;
         cx.notify();
     }
 
@@ -1206,6 +1521,8 @@ impl ReaderView {
             "Dark".into()
         } else if self.theme == "Dark" {
             "Sepia".into()
+        } else if self.theme == "Sepia" {
+            "Custom".into()
         } else {
             "Light".into()
         };
@@ -1359,7 +1676,66 @@ fn constrain_images(html: &str, column_px: f32) -> String {
 /// `<img>` with inlined data URIs.
 fn prepare_section_html(html: &str, book: &Book, section_path: &str) -> String {
     let body = strip_element(&strip_element(html, "head"), "title");
-    inline_svg_images(&body, book, section_path)
+    let body = inline_svg_images(&body, book, section_path);
+    make_images_clickable(&body)
+}
+
+/// Wrap every `<img>` in an `<a href="img:...">` so clicking an image opens
+/// the lightbox modal. GPUI has no dedicated image-click handler, so links
+/// are the only clickable affordance in the HTML renderer.
+fn make_images_clickable(html: &str) -> String {
+    if !html.contains("<img") {
+        return html.to_string();
+    }
+    let mut out = String::with_capacity(html.len() + 64);
+    let mut rest = html;
+    while let Some(pos) = rest.find("<img") {
+        out.push_str(&rest[..pos]);
+        let tail = &rest[pos..];
+        let end = tail.find('>').map(|i| i + 1).unwrap_or(tail.len());
+        let tag = &tail[..end];
+        let src = extract_img_src(tag);
+        if let Some(src) = src {
+            out.push_str(&format!("<a href='img:{}'>", src));
+            out.push_str(tag);
+            out.push_str("</a>");
+        } else {
+            out.push_str(tag);
+        }
+        rest = &tail[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+fn extract_img_src(tag: &str) -> Option<String> {
+    for q in ['"', '\''] {
+        let pat = format!("src={}", q);
+        if let Some(start) = tag.find(&pat) {
+            let from = start + pat.len();
+            if let Some(len) = tag[from..].find(q) {
+                return Some(tag[from..from + len].to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Best-effort print-page label for the current section, from the book's
+/// page list (EPUB 2 NCX / EPUB 3 nav). Returns `None` when the book has
+/// no page list or no entry matches.
+fn current_page_label(book: &ebook_rs::Book, current: usize) -> Option<String> {
+    let sec = book.get_section(current).ok()?;
+    let href = sec.href.clone();
+    let full = sec.full_path.clone();
+    book.page_list()
+        .iter()
+        .rev()
+        .find(|p| {
+            let t = p.href.split('#').next().unwrap_or(&p.href);
+            t == href || t == full || full.ends_with(t) || href.ends_with(t)
+        })
+        .map(|p| format!("p. {}", p.page))
 }
 
 /// Remove every `<tag …>…</tag>` block, keeping everything around it.
@@ -1417,14 +1793,25 @@ fn inline_svg_images(html: &str, book: &Book, section_path: &str) -> String {
         let tail = &rest[pos..];
         let end = tail.find('>').map(|i| i + 1).unwrap_or(tail.len());
         let tag = &tail[..end];
-        match image_href(tag).and_then(|href| image_resource(book, dir, href)) {
-            Some((bytes, mime)) => {
-                let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-                out.push_str(&format!(
-                    "<img src=\"data:{mime};base64,{b64}\" style=\"width:100%\" />"
-                ));
+        // ebook-rs 0.17.3 inlines SVG <image> references as data: URIs in place
+        // (keeping the <image> tag). GPUI cannot render SVG, so convert any
+        // <image> whose href is already a data: URI into an <img> the
+        // TextView can draw. Otherwise fall back to fetching from the archive
+        // (older books / unprocessed input).
+        match image_href(tag) {
+            Some(href) if href.starts_with("data:") => {
+                out.push_str(&format!("<img src=\"{href}\" style=\"width:100%\" />"));
             }
-            // Leave it untouched: the renderer will skip it, exactly as before.
+            Some(href) => match image_resource(book, dir, href) {
+                Some((bytes, mime)) => {
+                    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                    out.push_str(&format!(
+                        "<img src=\"data:{mime};base64,{b64}\" style=\"width:100%\" />"
+                    ));
+                }
+                // Leave it untouched: the renderer will skip it, exactly as before.
+                None => out.push_str(tag),
+            },
             None => out.push_str(tag),
         }
         rest = &tail[end..];
@@ -1690,6 +2077,16 @@ fn setting_row(label: &str, value: String, minus: AnyElement, plus: AnyElement) 
 impl Render for ReaderView {
     #[allow(refining_impl_trait)]
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        // Pull custom theme colors from the inputs (only meaningful when the
+        // Custom theme is active).
+        let bg_in = self.custom_bg_input.read(cx).value().to_string();
+        if bg_in != self.custom_bg {
+            self.custom_bg = bg_in;
+        }
+        let fg_in = self.custom_fg_input.read(cx).value().to_string();
+        if fg_in != self.custom_fg {
+            self.custom_fg = fg_in;
+        }
         let (bg, fg) = self.theme_colors();
         if self.show_library {
             return self.render_library(window, cx, bg, fg);
@@ -1706,6 +2103,20 @@ impl Render for ReaderView {
                 self.current + 1,
                 b.sections().len()
             ));
+            if let Some(page) = current_page_label(b, self.current) {
+                parts.push(page);
+            }
+            // Reading stats: words in the current section + session reading time.
+            if let Ok(sec) = b.get_section(self.current) {
+                let words = sec.plain_text.split_whitespace().count();
+                if words > 0 {
+                    parts.push(format!("{words} words"));
+                }
+            }
+            let mins = self.reading_start.elapsed().as_secs() / 60;
+            if mins > 0 {
+                parts.push(format!("{mins} min read"));
+            }
             parts.join("  ·  ")
         } else {
             "No book".into()
@@ -1723,11 +2134,24 @@ impl Render for ReaderView {
         } else {
             String::new()
         };
+        // Char-accurate progress via the Readium location map, instead of a
+        // coarse section-count ratio. Falls back to the section ratio when no
+        // location map is available (e.g. lazy-loaded books).
         let progress = if let Some(b) = &self.book {
             if b.sections().is_empty() {
                 0.0
             } else {
-                (self.current as f32 + 1.0) / b.sections().len() as f32 * 100.0
+                let cfi = b
+                    .to_readium_locator(self.current, 0)
+                    .ok()
+                    .and_then(|l| l.locations.cfi);
+                if let Some(cfi) = cfi
+                    && b.locations().total_locations > 0
+                {
+                    (b.locations().percentage_from_cfi(&cfi) * 100.0) as f32
+                } else {
+                    (self.current as f32 + 1.0) / b.sections().len() as f32 * 100.0
+                }
             }
         } else {
             0.0
@@ -1922,9 +2346,50 @@ impl Render for ReaderView {
             SidebarMode::Dictionary => {
                 let mut v = v_flex().gap_2().p_2();
                 v = v.child(Input::new(&self.dictionary_input));
+                let on_load_dict = cx.listener(|view, _ev, _window, cx| {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .add_filter("StarDict", &["ifo"])
+                        .pick_file()
+                    {
+                        match StarDict::load(&path) {
+                            Ok(sd) => {
+                                let name = path
+                                    .file_stem()
+                                    .and_then(|s| s.to_str())
+                                    .unwrap_or("dictionary")
+                                    .to_string();
+                                view.stardict = Some(sd);
+                                view.stardict_name = name;
+                                view.dictionary_result = format!("Loaded: {}", view.stardict_name);
+                            }
+                            Err(e) => {
+                                view.dictionary_result = format!("Load failed: {e}");
+                            }
+                        }
+                        cx.notify();
+                    }
+                });
+                v = v.child(
+                    Button::new("loaddict")
+                        .ghost()
+                        .label(if self.stardict_name.is_empty() {
+                            "Load StarDict (.ifo)".to_string()
+                        } else {
+                            format!("Dict: {}", self.stardict_name)
+                        })
+                        .on_click(on_load_dict),
+                );
                 let on_lookup = cx.listener(|view, _ev, _w, cx| {
                     let word = view.dictionary_input.read(cx).value().to_string();
                     if word.trim().is_empty() {
+                        return;
+                    }
+                    // Prefer the offline StarDict when loaded.
+                    if let Some(sd) = &view.stardict
+                        && let Some(def) = sd.lookup(word.trim())
+                    {
+                        view.dictionary_result = def;
+                        cx.notify();
                         return;
                     }
                     let url = format!(
@@ -2132,7 +2597,7 @@ impl Render for ReaderView {
 
         // ---- typography bar -------------------------------------------------
         // Labelled steppers, so the meaning of every "+/-" pair is obvious.
-        let typography_panel = h_flex()
+        let mut typography_panel = h_flex()
             .w_full()
             .flex_wrap()
             .items_center()
@@ -2220,6 +2685,19 @@ impl Render for ReaderView {
                     .label("Reset to defaults")
                     .on_click(cx.listener(|v, _, _, cx| v.reset_display(cx))),
             );
+
+        // Custom theme color inputs (only when the Custom theme is active).
+        if self.theme == "Custom" {
+            typography_panel = typography_panel.child(
+                h_flex()
+                    .gap_3()
+                    .items_center()
+                    .child(div().w(px(96.0)).text_size(px(12.0)).child("Custom bg"))
+                    .child(Input::new(&self.custom_bg_input).w(px(120.0)))
+                    .child(div().w(px(96.0)).text_size(px(12.0)).child("Custom fg"))
+                    .child(Input::new(&self.custom_fg_input).w(px(120.0))),
+            );
+        }
 
         // ---- actions bar ----------------------------------------------------
         let actions_panel = h_flex()
@@ -2314,8 +2792,9 @@ impl Render for ReaderView {
         } else {
             String::new()
         };
+        let view = cx.entity().clone();
         let page = |id: String, h: String| {
-            div()
+            let page_div = div()
                 .min_w(px(0.0))
                 .max_w(px(max_width))
                 .w_full()
@@ -2325,14 +2804,21 @@ impl Render for ReaderView {
                 .line_height(px(font_size * line_height))
                 .font_family(self.font_family.clone())
                 .text_align(TextAlign::Left)
-                .overflow_hidden()
-                .child(
-                    TextView::html(id.clone(), h)
-                        // Enables drag-to-select. The selection is read back with
-                        // gpui::TextSelection::selected_text() for copy and highlights.
-                        .selectable(true)
-                        .scrollable(true),
-                )
+                .overflow_hidden();
+            page_div.child(
+                TextView::html(id.clone(), h)
+                    // Enables drag-to-select. The selection is read back with
+                    // gpui::TextSelection::selected_text() for copy and highlights.
+                    .selectable(true)
+                    .scrollable(true)
+                    .on_link_click({
+                        let view = view.clone();
+                        move |url, _event, _window, cx| {
+                            let url = url.to_string();
+                            view.update(cx, |v, cx| v.handle_link_click(&url, cx));
+                        }
+                    }),
+            )
         };
         let content = if self.two_page {
             h_flex()
@@ -2434,6 +2920,19 @@ impl Render for ReaderView {
                     "F11" => view.toggle_fullscreen(window, cx),
                     "+" | "=" => view.change_font(2.0, cx),
                     "-" => view.change_font(-2.0, cx),
+                    "b" => view.toggle_bookmark(window, cx),
+                    "t" => {
+                        view.sidebar_mode = SidebarMode::Contents;
+                        cx.notify();
+                    }
+                    "s" => {
+                        view.sidebar_mode = SidebarMode::Search;
+                        cx.notify();
+                    }
+                    "a" => {
+                        view.sidebar_mode = SidebarMode::Annotations;
+                        cx.notify();
+                    }
                     "j" => {
                         view.justify = !view.justify;
                         view.sync_state();
@@ -2461,15 +2960,66 @@ impl Render for ReaderView {
                         .border_1()
                         .p_4()
                         .child(div().text_size(px(16.0)).child(m.title.clone()))
-                        .child(div().flex_1().max_h(px(440.0)).text_size(px(13.0)).child(
-                            TextView::html("modal-body", escape_html(&m.body)).scrollable(true),
-                        ))
+                        .child(if let Some(src) = &m.image {
+                            div()
+                                .flex_1()
+                                .max_h(px(440.0))
+                                .child(
+                                    TextView::html(
+                                        "modal-image",
+                                        format!("<img src='{}' style='max-width:100%' />", src),
+                                    )
+                                    .scrollable(true),
+                                )
+                                .into_any_element()
+                        } else {
+                            div()
+                                .flex_1()
+                                .max_h(px(440.0))
+                                .text_size(px(13.0))
+                                .child(
+                                    TextView::html("modal-body", escape_html(&m.body))
+                                        .scrollable(true),
+                                )
+                                .into_any_element()
+                        })
                         .child(
                             h_flex().justify_end().child(
                                 Button::new("modal-close")
                                     .label("Close")
                                     .on_click(cx.listener(|v, _, _, cx| v.close_modal(cx))),
                             ),
+                        ),
+                )
+        } else if self.passphrase_modal {
+            v_flex()
+                .flex_1()
+                .size_full()
+                .items_center()
+                .justify_center()
+                .p_6()
+                .child(
+                    v_flex()
+                        .w(px(420.0))
+                        .gap_3()
+                        .border_1()
+                        .p_4()
+                        .child(div().text_size(px(16.0)).child("Passphrase required"))
+                        .child(
+                            div()
+                                .text_size(px(13.0))
+                                .child(self.passphrase_error.clone()),
+                        )
+                        .child(Input::new(&self.passphrase_input))
+                        .child(
+                            h_flex().justify_end().gap_2().children([
+                                Button::new("pp-cancel")
+                                    .label("Cancel")
+                                    .on_click(cx.listener(|v, _, _, cx| v.cancel_passphrase(cx))),
+                                Button::new("pp-submit").label("Open").on_click(
+                                    cx.listener(|v, _, window, cx| v.submit_passphrase(window, cx)),
+                                ),
+                            ]),
                         ),
                 )
         } else {

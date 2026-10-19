@@ -23,21 +23,21 @@ version = 2
 # "deny" once we are happy with the current set.
 unmaintained = "workspace"
 ignore = [
-    # RUSTSEC-2026-0367 / 0368 / 0369 — all three are in the same family:
+    # RUSTSEC-2026-0367 / 0368 / 0369 - all three are in the same family:
     # zip's extraction APIs (`ZipArchive::extract()`, `ZipStreamReader::extract()`)
-    # are unsafe for untrusted archives —
+    # are unsafe for untrusted archives -
     #   0367: preserves SUID/SGID/sticky bits (local privesc when a privileged
     #         process extracts an attacker's archive)
     #   0368: creates symlinks whose targets are not confined to the
     #         destination directory (arbitrary file write)
     #   0369: applies Unix permissions through those symlinks
     #
-    # We cannot take the upstream fix today because both zip copies are pinned
-    # below the fixed version (>= 9.0.0) by our dependencies:
-    #   ebook-rs 0.17.1      requires zip = "7.0"  -> resolves to 7.4.0
-    #   office_oxide 0.1.11  requires zip = "8.6"  -> resolves to 8.6.0
-    # Both are major-version-pinned, so only an upstream ebook-rs release can
-    # fix this.
+    # ebook-rs 0.17.3 itself moved to zip 9.0.5, but the pdf_oxide 0.3.78 ->
+    # office_oxide 0.1.11 transitive path still pulls zip 8.6.0, which is
+    # vulnerable. The pin is forced (office_oxide 0.1.12+ breaks pdf_oxide
+    # 0.3.78's `DocumentIR` struct literal), so the vulnerable zip remains
+    # in the graph until pdf_oxide ships a release compatible with
+    # office_oxide 0.1.12+.
     #
     # Why it is acceptable in eParna: every one of these lives on the
     # *extract-to-filesystem* path. eParna only ever reads individual entries
@@ -45,8 +45,8 @@ ignore = [
     # attacker-supplied archive is ever extracted onto disk, and eParna never
     # runs privileged.
     #
-    # Review trigger: an ebook-rs release that depends on zip >= 9.0.0. Drop
-    # these entries when that lands.
+    # Review trigger: a pdf_oxide release compatible with office_oxide >= 0.1.12.
+    # Drop these entries when that lands.
     { id = "RUSTSEC-2026-0367" },
     { id = "RUSTSEC-2026-0368" },
     { id = "RUSTSEC-2026-0369" },

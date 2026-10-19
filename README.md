@@ -40,8 +40,13 @@ Built on [ebook-rs](https://crates.io/crates/ebook-rs) for multi-format parsing 
   theme and one/two-page toggles and "Reset to defaults"; a **⋯** panel holds
   the long-tail actions (book info, validation, Save as EPUB, note export,
   go-to-section, fullscreen, new window).
-- **Footnotes** — browse footnotes for the current section.
-- **Dictionary & Wikipedia** — look up a word or topic without leaving the book.
+- **Footnotes** — click a footnote reference to pop up the note inline; cross-document links navigate to the target section.
+- **Dictionary & Wikipedia** — look up a word or topic without leaving the book. Offline **StarDict** dictionaries (`.ifo`/`.idx`/`.dict`) are also supported.
+- **Image lightbox** — click any image in the reading view to view it full-size.
+- **Nested TOC & print pages** — the TOC preserves hierarchy, and the status line shows the print page when the book has a page list.
+- **Reading statistics** — section word count and session reading time in the status line.
+- **Custom theme** — a "Custom" theme with user-chosen background/foreground colours.
+- **LCP/DRM passphrase** — protected books can be opened by entering a passphrase.
 - **OPDS catalogues** — browse and download from OPDS feeds.
 - **Multiple windows** — open additional reader windows.
 - **Reading progress** — progress bar, percentage, and `n/total` section indicator.
@@ -52,7 +57,7 @@ Built on [ebook-rs](https://crates.io/crates/ebook-rs) for multi-format parsing 
 
 ## Requirements
 
-- Rust 1.85 or newer (edition 2024; the MSRV is declared as `rust-version` in `Cargo.toml`)
+- Rust 1.90 or newer (edition 2024; the MSRV is declared as `rust-version` in `Cargo.toml`)
 - A supported desktop platform (Windows, macOS, Linux) with a working graphics stack
 
 ## Build
@@ -75,7 +80,7 @@ Prebuilt artifacts are attached to every [GitHub Release](https://github.com/SV-
 | Windows x64 | `eparna-x86_64-pc-windows-msvc.zip` | Portable build, no install needed |
 | macOS (Apple Silicon) | `eparna-aarch64-apple-darwin.pkg` | Double-click installer |
 | macOS (Intel) | `eparna-x86_64-apple-darwin.pkg` | Double-click installer |
-| Linux x64 | `eparna_0.5.0_x86_64.AppImage` | Single file; `chmod +x` and run |
+| Linux x64 | `eparna_0.6.0_x86_64.AppImage` | Single file; `chmod +x` and run |
 | Any | `eparna-installer.sh` / `eparna-installer.ps1` | `curl \| sh` / `irm \| iex` |
 
 Or install with the one-liner scripts:
@@ -230,13 +235,15 @@ persistence and annotation export.
 
 Known gaps (mostly limited by the current UI stack):
 
-- Multi-colour highlights and pop-up footnote links.
+- Multi-colour highlights (single colour only).
 - Text-to-speech.
 - True paginated (page-flip) layout and hyphenation; scrolling is used instead.
 - Metadata editing (the library is a cover grid, but book metadata is read-only).
-- DRM (Readium LCP). `ebook-rs` refuses to open LCP-protected containers
-  (`EbookError::DrmProtected`) before decryption can be attempted, so supporting
-  purchased Kobo/ownBooks titles needs work upstream in that crate first.
+- Seekable progress bar and search jump-to-match: GPUI's HTML `TextView` has no
+  programmatic scroll/reveal, so intra-section position restore and clickable
+  progress are deferred until upstream support lands.
+- DRM (Readium LCP). Passphrase entry is now supported (`from_bytes_with_passphrase`);
+  full per-resource decryption and broader LCP test coverage are still pending.
 
 ## Project layout
 
