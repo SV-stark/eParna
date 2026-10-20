@@ -495,6 +495,11 @@ impl ReaderView {
             panel: Panel::None,
             modal: None,
         };
+        // Auto-lookup note: TextSelectionEvent is private and GPUI's HTML
+        // TextView has no selection-change callback, so automatic lookup on
+        // double-click is not possible without polling. Instead, a "Lookup
+        // selection" button is provided in the Dictionary sidebar.
+
         if view.show_library {
             view.load_covers();
         }
@@ -960,6 +965,42 @@ impl ReaderView {
     /// The text currently selected in the reading view, trimmed.
     fn selected_text(window: &mut Window, cx: &mut App) -> String {
         TextSelection::selected_text(window, cx).trim().to_string()
+    }
+
+    /// Look a word up (offline StarDict first, then the online dictionary API)
+    /// and show the result in the dictionary sidebar.
+    fn lookup_word(&mut self, word: &str, cx: &mut Context<Self>) {
+        let word = word.trim();
+        if word.is_empty() {
+            return;
+        }
+        if let Some(sd) = &self.stardict
+            && let Some(def) = sd.lookup(word)
+        {
+            self.dictionary_result = def;
+            self.sidebar_mode = SidebarMode::Dictionary;
+            cx.notify();
+            return;
+        }
+        let url = format!("https://api.dictionaryapi.dev/api/v2/entries/en/{}", word);
+        self.dictionary_result = match ureq::get(&url).call() {
+            Ok(resp) => {
+                let body = resp.into_body().read_to_string().unwrap_or_default();
+                if let Some(idx) = body.find("\"definition\":\"") {
+                    let rest = &body[idx + 14..];
+                    if let Some(end) = rest.find('"') {
+                        rest[..end].to_string()
+                    } else {
+                        "No definition".into()
+                    }
+                } else {
+                    "No definition".into()
+                }
+            }
+            Err(_) => "Lookup failed".into(),
+        };
+        self.sidebar_mode = SidebarMode::Dictionary;
+        cx.notify();
     }
 
     /// Copy the current selection to the clipboard (`Ctrl+C`).
@@ -2416,6 +2457,24 @@ impl Render for ReaderView {
                     cx.notify();
                 });
                 v = v.child(Button::new("lookup").label("Lookup").on_click(on_lookup));
+                let on_lookup_sel = cx.listener(|view, _ev, window, cx| {
+                    let word = Self::selected_text(window, cx);
+                    if word.trim().is_empty() {
+                        view.dictionary_result = "Select a word first".into();
+                        cx.notify();
+                        return;
+                    }
+                    view.dictionary_input.update(cx, |s, cx| {
+                        s.set_value(word.clone(), window, cx);
+                    });
+                    view.lookup_word(word.trim(), cx);
+                });
+                v = v.child(
+                    Button::new("lookup-sel")
+                        .ghost()
+                        .label("Lookup selection")
+                        .on_click(on_lookup_sel),
+                );
                 let on_wiki = cx.listener(|view, _ev, _w, cx| {
                     let word = view.dictionary_input.read(cx).value().to_string();
                     if word.trim().is_empty() {

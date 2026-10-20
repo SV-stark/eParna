@@ -28,6 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Footnote pop-ups: clicking a footnote reference in the reading view opens
   a modal showing the note (via GPUI's `on_link_click` on the HTML
   `TextView`). Cross-document footnote links navigate to the target section.
+- Dictionary: a "Lookup selection" button looks up the current text selection
+  (useful for double-clicked words) in addition to the typed input.
 - Offline StarDict dictionary support: a pure-Rust, MIT-licensed reader for
   the StarDict format (`.ifo`/`.idx`/`.dict` or `.dict.dz`), loaded via a
   "Load StarDict" button in the Dictionary sidebar. Lookup prefers the
