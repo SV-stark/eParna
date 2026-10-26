@@ -6,6 +6,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-27
+
+### Added
+- Manga & Comic RTL reading flow: auto-detects `PageProgressionDirection::Rtl`,
+  inverts navigation keys and buttons, and provides status and toggle action.
+- In-text visual highlights: persistent `<mark>` style highlight overlay
+  rendered directly in the chapter text without breaking layout or tags.
+- In-page search highlight and find bar (`Ctrl+F`) with query match highlighting
+  and clear action.
+- Dark mode & Sepia CSS reset immunity: overrides hardcoded dark publisher inline
+  text styling for readability in dark and sepia modes.
+- Library view toggle: switch between visual cover grid and detailed tabular list
+  view with thumbnail, reading progress, and quick actions.
+- Expanded typeface collection: added `OpenDyslexic`, `Bookerly`, `Georgia`, and
+  `Courier New`.
+- Media overlay inspection: inspect SMIL audio read-along tracks in book metadata.
+- Modular architecture: refactored monolithic codebase into `models`, `config`,
+  `stardict`, `html_utils`, and `main`.
+
 ## [0.6.0] - 2026-10-19
 
 ### Added
