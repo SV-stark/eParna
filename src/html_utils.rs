@@ -57,6 +57,9 @@ pub fn theme_style_override(theme: &str) -> &'static str {
         "Dark" => {
             "<style>body, div, p, span, li, h1, h2, h3, h4, h5, h6, table, tr, th, td, blockquote, pre, code { color: #e0e0e0 !important; background-color: transparent !important; } a { color: #8ab4f8 !important; } table { border-collapse: collapse; } th, td { border: 1px solid #444; padding: 4px 8px; } blockquote { border-left: 3px solid #666; margin: 1em 0; padding-left: 1em; }</style>"
         }
+        "OLED Black" => {
+            "<style>body, div, p, span, li, h1, h2, h3, h4, h5, h6, table, tr, th, td, blockquote, pre, code { color: #d4d4d4 !important; background-color: #000000 !important; } a { color: #60a5fa !important; } table { border-collapse: collapse; } th, td { border: 1px solid #262626; padding: 4px 8px; } blockquote { border-left: 3px solid #404040; margin: 1em 0; padding-left: 1em; }</style>"
+        }
         "Sepia" => {
             "<style>body, div, p, span, li, h1, h2, h3, h4, h5, h6, table, tr, th, td, blockquote, pre, code { color: #5b4636 !important; background-color: transparent !important; } a { color: #8c5b36 !important; } table { border-collapse: collapse; } th, td { border: 1px solid #c8b9a6; padding: 4px 8px; } blockquote { border-left: 3px solid #8c5b36; margin: 1em 0; padding-left: 1em; }</style>"
         }
@@ -391,6 +394,7 @@ mod tests {
     #[test]
     fn test_theme_style_override() {
         assert!(theme_style_override("Dark").contains("#e0e0e0 !important"));
+        assert!(theme_style_override("OLED Black").contains("#d4d4d4 !important"));
         assert!(theme_style_override("Sepia").contains("#5b4636 !important"));
         assert!(theme_style_override("Nord").contains("#eceff4 !important"));
         assert!(theme_style_override("Solarized").contains("#657b83 !important"));

@@ -35,7 +35,10 @@ short_description = "A fast, lightweight, cross-platform ebook reader"
 # AppStream metadata, embedded in the AppImage so software centres can list it.
 appimage_metainfo_path = "assets/metainfo/com.svstark.eparna.metainfo.xml"
 icon = [
+    "assets/icons/16x16.png",
     "assets/icons/32x32.png",
+    "assets/icons/48x48.png",
+    "assets/icons/64x64.png",
     "assets/icons/128x128.png",
     "assets/icons/256x256.png",
     "assets/icons/512x512.png",

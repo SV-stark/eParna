@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **New Application Icon & Windows ICO**: Multi-resolution `.ico` icon (`assets/icon.ico`, `assets/icons/icon.ico`, `wix/Product.ico`) and updated PNG suite depicting an open codex with an elegant quill feather nestled between its pages.
+- **Distraction-Free / Zen Reading Mode**: Toggle with `Z`, toolbar header, or Actions panel to strip away all chrome and panels for a pure, serene reading surface.
+- **Navigation History & Jump Back**: Stack-based location history with `Alt+←` or `Backspace` shortcut and toolbar button to immediately jump back after following footnotes, hyperlinks, or TOC jumps.
+- **Persistent Bookmarks Sidebar**: Bookmarks now persist across sessions in `PersistedState`; enhanced sidebar lists chapter names, section links, deletion controls, and an active section bookmark status indicator.
+- **OLED Black Theme**: Added pure pitch #000000 dark theme with soft high-contrast typography, saving battery and eliminating glare on OLED displays.
+- **Configurable Reading Speed (WPM)**: Added in-app stepper (80–800 WPM) in the typography panel to fine-tune time-remaining estimations per chapter and whole book.
+- **Plain Text (.txt) Book Exporter**: Added full-book plain text export in the Actions panel.
+- **Go-to Percentage Navigation**: Go-to input now supports direct percentage jumps (e.g. `25%`, `50%`) as well as section numbers.
 - **Amazon KFX (.kfx) Export**: Added native KFX export via `Book::export_kfx_bytes()` in the Actions panel, enabling export from any supported ebook format to clean Kindle Format 10 containers.
 - **Academic Citation Exporter**: Added interactive Citations modal exporting BibTeX, APA (7th ed.), MLA (9th ed.), and Chicago (17th ed.) citations via `ebook-rs`.
 - **Page Geometry & Viewport Dimensions**: Book Info now inspects and displays exact page dimensions (width × height pt) for PDF documents and Fixed-Layout EPUB sections.

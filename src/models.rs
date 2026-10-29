@@ -146,6 +146,9 @@ pub fn default_wpm() -> u32 {
 pub struct PersistedState {
     pub recent: Vec<RecentBook>,
     pub annotations: HashMap<String, Vec<Annotation>>,
+    /// Bookmarked spine sections per book path.
+    #[serde(default)]
+    pub bookmarks: HashMap<String, Vec<usize>>,
     pub font_size: f32,
     pub line_height: f32,
     pub margin: f32,
@@ -176,6 +179,7 @@ impl Default for PersistedState {
         Self {
             recent: Vec::new(),
             annotations: HashMap::new(),
+            bookmarks: HashMap::new(),
             font_size: 16.0,
             line_height: 1.6,
             margin: 24.0,

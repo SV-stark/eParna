@@ -135,6 +135,12 @@ struct ReaderView {
 
     // Library shelf filter: 0 = All, 1 = Reading, 2 = Favorites, 3 = Finished, 4 = Want to Read
     library_shelf_filter: usize,
+
+    // Distraction-free / Zen mode
+    zen_mode: bool,
+
+    // Navigation history stack for jump-back (e.g. after following footnotes or links)
+    nav_history: Vec<usize>,
 }
 
 impl ReaderView {
@@ -219,6 +225,7 @@ impl ReaderView {
     fn theme_colors(&self) -> (Hsla, Hsla) {
         match self.theme.as_str() {
             "Dark" => (rgb(0x1e1e1e).into(), rgb(0xe0e0e0).into()),
+            "OLED Black" => (rgb(0x000000).into(), rgb(0xd4d4d4).into()),
             "Sepia" => (rgb(0xf4ecd8).into(), rgb(0x5b4636).into()),
             "Nord" => (rgb(0x2e3440).into(), rgb(0xeceff4).into()),
             "Solarized" => (rgb(0xfdf6e3).into(), rgb(0x657b83).into()),
@@ -343,6 +350,8 @@ impl ReaderView {
             rtl_mode: false,
             highlight_color: "yellow".into(),
             library_shelf_filter: 0,
+            zen_mode: false,
+            nav_history: Vec::new(),
         };
 
         if view.show_library {
@@ -532,7 +541,13 @@ impl ReaderView {
                     .get(&key)
                     .cloned()
                     .unwrap_or_default();
-                self.bookmarks.clear();
+                self.bookmarks = self
+                    .state
+                    .bookmarks
+                    .get(&key)
+                    .cloned()
+                    .unwrap_or_default();
+                self.nav_history.clear();
                 self.refresh_bookmark_state(window, cx);
 
                 let now = format!(
@@ -736,9 +751,27 @@ impl ReaderView {
         if let Some(book) = &self.book
             && idx < book.sections().len()
         {
+            if idx != self.current {
+                self.nav_history.push(self.current);
+                if self.nav_history.len() > 50 {
+                    self.nav_history.remove(0);
+                }
+            }
             self.current = idx;
             self.load_current(cx);
             cx.notify();
+        }
+    }
+
+    fn jump_back(&mut self, cx: &mut Context<Self>) {
+        if let Some(prev) = self.nav_history.pop() {
+            if let Some(book) = &self.book
+                && prev < book.sections().len()
+            {
+                self.current = prev;
+                self.load_current(cx);
+                cx.notify();
+            }
         }
     }
 
@@ -771,6 +804,11 @@ impl ReaderView {
         } else {
             self.bookmarks.push(self.current);
             self.bookmarks.sort();
+        }
+        if let Some(path) = &self.book_path {
+            let key = path.to_string_lossy().to_string();
+            self.state.bookmarks.insert(key, self.bookmarks.clone());
+            self.save_state();
         }
         self.refresh_bookmark_state(window, cx);
         cx.notify();
@@ -1719,15 +1757,27 @@ impl ReaderView {
         self.sync_state();
         cx.notify();
     }
+    fn adjust_wpm(&mut self, delta: i32, cx: &mut Context<Self>) {
+        let cur = self.state.wpm as i32;
+        self.state.wpm = (cur + delta).clamp(80, 800) as u32;
+        self.save_state();
+        cx.notify();
+    }
+    fn toggle_zen_mode(&mut self, cx: &mut Context<Self>) {
+        self.zen_mode = !self.zen_mode;
+        cx.notify();
+    }
     fn cycle_font(&mut self, cx: &mut Context<Self>) {
-        const FONTS: [&str; 8] = [
+        const FONTS: [&str; 10] = [
             "sans-serif",
             "serif",
             "monospace",
             "system-ui",
             "Georgia",
             "Bookerly",
+            "Palatino",
             "OpenDyslexic",
+            "Cascadia Code",
             "Courier New",
         ];
         let i = FONTS
@@ -1746,10 +1796,11 @@ impl ReaderView {
             "Nord" => "Solarized".into(),
             "Solarized" => "Solarized Dark".into(),
             "Solarized Dark" => "E-Ink".into(),
-            "E-Ink" => "Custom".into(),
+            "E-Ink" => "OLED Black".into(),
+            "OLED Black" => "Custom".into(),
             _ => "Light".into(),
         };
-        self.dark = matches!(self.theme.as_str(), "Dark" | "Nord" | "Solarized Dark");
+        self.dark = matches!(self.theme.as_str(), "Dark" | "OLED Black" | "Nord" | "Solarized Dark");
         self.sync_state();
         self.load_current(cx);
         cx.notify();
@@ -1787,17 +1838,19 @@ Keyboard Shortcuts:
 Navigation:
   → / PgDown / Space   Next section (or Previous in Manga RTL)
   ← / PgUp / Shift+Spc Previous section (or Next in Manga RTL)
+  Alt + ← / Backspace  Jump back to previous location
   Home                 Jump to beginning of book
   End                  Jump to end of book
   Ctrl + O             Open book file
   Ctrl + L             Return to Library
+  z                    Toggle Zen / Distraction-free reading mode
   F11                  Toggle Fullscreen
-  Esc                  Close dialog / find bar / exit to library
+  Esc                  Close dialog / exit Zen mode / return to library
 
 Reading & Display:
   + / =                Increase font size
   - / _                Decrease font size
-  m                    Cycle theme (Light, Dark, Sepia, Nord, Solarized, E-Ink)
+  m                    Cycle theme (Light, Dark, OLED Black, Sepia, Nord, Solarized, E-Ink)
   r                    Toggle Manga / RTL reading flow
   Ctrl + F             Find in current chapter
 
@@ -1807,6 +1860,7 @@ Sidebars & Panels:
   a                    Annotations & Highlights sidebar
   d                    Dictionary & Reference sidebar
   b / Ctrl + B         Toggle Bookmark for current section
+  p / Ctrl + P         Toggle Typography & Reading Settings panel
   Ctrl + C             Copy selected text
   ? / F1               This Keyboard Shortcuts cheatsheet";
 
@@ -1912,6 +1966,55 @@ Sidebars & Panels:
                 }
             }
             Err(e) => notify_simple(window, cx, "Export failed", e),
+        }
+    }
+
+    fn save_as_txt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(book) = &self.book else {
+            return;
+        };
+        let mut full_text = String::new();
+        full_text.push_str(&format!("{}\n", book.metadata().title));
+        if !book.metadata().creators.is_empty() {
+            full_text.push_str(&format!("By {}\n", book.metadata().creators.join(", ")));
+        }
+        full_text.push_str("\n========================================\n\n");
+        for i in 0..book.sections().len() {
+            if let Ok(sec) = book.get_section(i) {
+                let t = sec.plain_text.trim();
+                if !t.is_empty() {
+                    full_text.push_str(t);
+                    full_text.push_str("\n\n---\n\n");
+                }
+            }
+        }
+        let name = format!(
+            "{}.txt",
+            book.metadata()
+                .title
+                .chars()
+                .map(|c| {
+                    if c.is_alphanumeric() || c == ' ' || c == '-' {
+                        c
+                    } else {
+                        '_'
+                    }
+                })
+                .collect::<String>()
+        );
+        let chosen = rfd::FileDialog::new()
+            .set_file_name(&name)
+            .add_filter("Plain Text", &["txt"])
+            .save_file();
+        if let Some(path) = chosen {
+            let n = full_text.len();
+            let ok = std::fs::write(&path, full_text.as_bytes()).is_ok();
+            notify_simple(
+                window,
+                cx,
+                if ok { "Saved Plain Text" } else { "Write failed" },
+                format!("{} ({n} bytes)", path.display()),
+            );
         }
     }
 
@@ -2389,18 +2492,93 @@ impl Render for ReaderView {
                     }
                 }
                 if let Some(state) = &self.toc_state {
-                    v = v.child(div().text_size(px(11.0)).child("All sections:"));
+                    v = v.child(div().text_size(px(11.0)).child("Quick section:"));
                     v = v.child(Select::new(state));
+                }
+                if !self.toc_items.is_empty() {
+                    v = v.child(div().text_size(px(11.0)).child("Chapters:"));
+                    let mut chapter_list = v_flex().gap_1();
+                    for (i, (label, idx)) in self.toc_items.iter().take(80).enumerate() {
+                        let idx = *idx;
+                        let is_active = idx == self.current;
+                        let text = if is_active {
+                            format!("▶ {}", label.trim())
+                        } else {
+                            label.clone()
+                        };
+                        chapter_list = chapter_list.child(
+                            Button::new(format!("toc_ch_{i}"))
+                                .ghost()
+                                .label(truncate(&text, 30))
+                                .on_click(cx.listener(move |view, _, _, cx| {
+                                    view.jump(idx, cx);
+                                })),
+                        );
+                    }
+                    v = v.child(chapter_list);
                 }
                 v
             }
             SidebarMode::Bookmarks => {
                 let mut v = v_flex().gap_2().p_2();
-                v = v.child(div().text_size(px(14.0)).child("Bookmarks"));
-                if let Some(state) = &self.bookmark_state {
-                    v = v.child(Select::new(state));
+                let is_bm = self.bookmarks.contains(&self.current);
+                v = v.child(
+                    h_flex()
+                        .justify_between()
+                        .items_center()
+                        .child(div().text_size(px(14.0)).child("Bookmarks"))
+                        .child(
+                            Button::new("bm_toggle_sb")
+                                .ghost()
+                                .label(if is_bm { "− Remove" } else { "+ Add here" })
+                                .on_click(cx.listener(|view, _ev, window, cx| {
+                                    view.toggle_bookmark(window, cx)
+                                })),
+                        ),
+                );
+                if self.bookmarks.is_empty() {
+                    v = v.child(div().text_size(px(12.0)).child("No bookmarks yet in this book."));
                 } else {
-                    v = v.child(div().text_size(px(12.0)).child("No bookmarks yet."));
+                    for &sec in &self.bookmarks {
+                        let sec_idx = sec;
+                        let is_current = sec_idx == self.current;
+                        let label = if let Some((l, _)) = self.toc_items.iter().find(|(_, i)| *i == sec_idx) {
+                            format!("Sec {}: {}", sec_idx + 1, truncate(l.trim(), 22))
+                        } else {
+                            format!("Section {}", sec_idx + 1)
+                        };
+                        let on_del_bm = cx.listener(move |view, _, window, cx| {
+                            if let Some(pos) = view.bookmarks.iter().position(|&i| i == sec_idx) {
+                                view.bookmarks.remove(pos);
+                                if let Some(path) = &view.book_path {
+                                    let key = path.to_string_lossy().to_string();
+                                    view.state.bookmarks.insert(key, view.bookmarks.clone());
+                                    view.save_state();
+                                }
+                                view.refresh_bookmark_state(window, cx);
+                                cx.notify();
+                            }
+                        });
+                        v = v.child(
+                            h_flex()
+                                .gap_1()
+                                .items_center()
+                                .child(
+                                    Button::new(format!("bmlink_{sec_idx}"))
+                                        .ghost()
+                                        .label(if is_current { format!("▶ {label}") } else { label })
+                                        .on_click(cx.listener(move |view, _, _, cx| {
+                                            view.jump(sec_idx, cx);
+                                        })),
+                                )
+                                .child(
+                                    Button::new(format!("bmdel_{sec_idx}"))
+                                        .ghost()
+                                        .label("\u{2715}")
+                                        .on_click(on_del_bm),
+                                ),
+                        );
+                    }
                 }
                 v
             }
@@ -2860,6 +3038,73 @@ impl Render for ReaderView {
                     })),
             );
 
+        let is_bm = self.bookmarks.contains(&self.current);
+        let bm_label = if is_bm { "★ Bookmarked" } else { "☆ Bookmark" };
+        let back_btn = if let Some(last_sec) = self.nav_history.last() {
+            let last_sec = *last_sec;
+            Some(
+                Button::new("jump_back")
+                    .ghost()
+                    .label(format!("⤺ Sec {}", last_sec + 1))
+                    .on_click(cx.listener(|v, _, _, cx| v.jump_back(cx)))
+                    .into_any_element(),
+            )
+        } else {
+            None
+        };
+
+        let mut left_controls = h_flex()
+            .flex_grow(1.0)
+            .gap_2()
+            .items_center()
+            .child(Button::new("open").label("Open").on_click(on_open))
+            .child(Button::new("library").label("Library").on_click(on_lib));
+
+        if let Some(btn) = back_btn {
+            left_controls = left_controls.child(btn);
+        }
+
+        left_controls = left_controls
+            .child(
+                Button::new("prev")
+                    .ghost()
+                    .label(if self.rtl_mode {
+                        "\u{203a}"
+                    } else {
+                        "\u{2039}"
+                    })
+                    .on_click(on_prev),
+            )
+            .child(
+                Button::new("next")
+                    .ghost()
+                    .label(if self.rtl_mode {
+                        "\u{2039}"
+                    } else {
+                        "\u{203a}"
+                    })
+                    .on_click(on_next),
+            )
+            .child(Button::new("bm").label(bm_label).on_click(on_bm))
+            .child(
+                Button::new("highlight")
+                    .label("Highlight")
+                    .on_click(on_highlight),
+            )
+            .child(
+                Button::new("hl-col")
+                    .ghost()
+                    .label(format!("[{}]", self.highlight_color))
+                    .on_click(cx.listener(|v, _, _, cx| v.cycle_highlight_color(cx))),
+            )
+            .child(Button::new("copy").label("Copy").on_click(on_copy))
+            .child(Button::new("find-btn").ghost().label("Find").on_click(
+                cx.listener(|v, _, _, cx| {
+                    v.show_find_bar = !v.show_find_bar;
+                    cx.notify();
+                }),
+            ));
+
         let header =
             h_flex()
                 .w_full()
@@ -2868,53 +3113,7 @@ impl Render for ReaderView {
                 .px_2()
                 .py_2()
                 .border_b_1()
-                .child(
-                    h_flex()
-                        .flex_grow(1.0)
-                        .gap_2()
-                        .items_center()
-                        .child(Button::new("open").label("Open").on_click(on_open))
-                        .child(Button::new("library").label("Library").on_click(on_lib))
-                        .child(
-                            Button::new("prev")
-                                .ghost()
-                                .label(if self.rtl_mode {
-                                    "\u{203a}"
-                                } else {
-                                    "\u{2039}"
-                                })
-                                .on_click(on_prev),
-                        )
-                        .child(
-                            Button::new("next")
-                                .ghost()
-                                .label(if self.rtl_mode {
-                                    "\u{2039}"
-                                } else {
-                                    "\u{203a}"
-                                })
-                                .on_click(on_next),
-                        )
-                        .child(Button::new("bm").label("Bookmark").on_click(on_bm))
-                        .child(
-                            Button::new("highlight")
-                                .label("Highlight")
-                                .on_click(on_highlight),
-                        )
-                        .child(
-                            Button::new("hl-col")
-                                .ghost()
-                                .label(format!("[{}]", self.highlight_color))
-                                .on_click(cx.listener(|v, _, _, cx| v.cycle_highlight_color(cx))),
-                        )
-                        .child(Button::new("copy").label("Copy").on_click(on_copy))
-                        .child(Button::new("find-btn").ghost().label("Find").on_click(
-                            cx.listener(|v, _, _, cx| {
-                                v.show_find_bar = !v.show_find_bar;
-                                cx.notify();
-                            }),
-                        )),
-                )
+                .child(left_controls)
                 .child(
                     h_flex()
                         .gap_2()
@@ -2924,6 +3123,9 @@ impl Render for ReaderView {
                                 .text_size(px(12.0))
                                 .child(format!("{}  ({:.0}%)", pos, progress)),
                         )
+                        .child(Button::new("zen-hdr").ghost().label("Zen").on_click(
+                            cx.listener(|view, _, _, cx| view.toggle_zen_mode(cx)),
+                        ))
                         .child(Button::new("aa").ghost().label("Aa").on_click(cx.listener(
                             |view, _, _, cx| {
                                 view.panel = if view.panel == Panel::Typography {
@@ -3047,6 +3249,20 @@ impl Render for ReaderView {
                 "pg",
                 cx.listener(|v, _, _, cx| v.toggle_two_page(cx)),
             ))
+            .child(setting_row(
+                "Speed",
+                format!("{} wpm", self.state.wpm),
+                Button::new("wpm-dec")
+                    .ghost()
+                    .label("\u{2212}")
+                    .on_click(cx.listener(|v, _, _, cx| v.adjust_wpm(-20, cx)))
+                    .into_any_element(),
+                Button::new("wpm-inc")
+                    .ghost()
+                    .label("+")
+                    .on_click(cx.listener(|v, _, _, cx| v.adjust_wpm(20, cx)))
+                    .into_any_element(),
+            ))
             .child(
                 Button::new("reset-display")
                     .ghost()
@@ -3107,6 +3323,12 @@ impl Render for ReaderView {
                     .on_click(cx.listener(|v, _, window, cx| v.save_as_kfx(window, cx))),
             )
             .child(
+                Button::new("savetxt")
+                    .ghost()
+                    .label("Save as TXT\u{2026}")
+                    .on_click(cx.listener(|v, _, window, cx| v.save_as_txt(window, cx))),
+            )
+            .child(
                 Button::new("citations")
                     .ghost()
                     .label("Citations\u{2026}")
@@ -3141,14 +3363,31 @@ impl Render for ReaderView {
                     .label("Shortcuts (?)")
                     .on_click(cx.listener(|v, _, _, cx| v.show_shortcuts_modal(cx))),
             )
+            .child(
+                Button::new("zen-btn")
+                    .ghost()
+                    .label("Zen mode (Z)")
+                    .on_click(cx.listener(|v, _, _, cx| v.toggle_zen_mode(cx))),
+            )
             .child(div().w(px(1.0)).h(px(18.0)).border_l_1())
-            .child(Input::new(&self.goto_input).w(px(90.0)))
+            .child(Input::new(&self.goto_input).w(px(100.0)))
             .child(
                 Button::new("go")
                     .ghost()
-                    .label("Go to section")
+                    .label("Go to sec/%")
                     .on_click(cx.listener(|v, _ev, _w, cx| {
-                        if let Ok(n) = v.goto_input.read(cx).value().parse::<usize>() {
+                        let s = v.goto_input.read(cx).value().trim().to_string();
+                        if s.ends_with('%') {
+                            if let Ok(pct) = s.trim_end_matches('%').trim().parse::<f32>() {
+                                if let Some(book) = &v.book {
+                                    let total = book.sections().len();
+                                    if total > 0 {
+                                        let idx = ((pct / 100.0) * (total as f32)).round() as usize;
+                                        v.jump(idx.min(total - 1), cx);
+                                    }
+                                }
+                            }
+                        } else if let Ok(n) = s.parse::<usize>() {
                             v.jump(n.saturating_sub(1), cx);
                         }
                     })),
@@ -3320,11 +3559,18 @@ impl Render for ReaderView {
                     .child(div().flex_1().overflow_hidden().child(sidebar)),
             );
 
-        let body = h_flex()
-            .size_full()
-            .min_w(px(0.0))
-            .child(sidebar_panel)
-            .child(content);
+        let body = if self.zen_mode {
+            h_flex()
+                .size_full()
+                .min_w(px(0.0))
+                .child(content)
+        } else {
+            h_flex()
+                .size_full()
+                .min_w(px(0.0))
+                .child(sidebar_panel)
+                .child(content)
+        };
 
         let on_key = cx.listener(|view, event: &KeyDownEvent, window, cx| {
             let key = event.keystroke.key.as_str();
@@ -3332,7 +3578,10 @@ impl Render for ReaderView {
             let alt = event.keystroke.modifiers.alt;
 
             if key == "escape" {
-                if view.show_find_bar {
+                if view.zen_mode {
+                    view.zen_mode = false;
+                    cx.notify();
+                } else if view.show_find_bar {
                     view.show_find_bar = false;
                     view.active_search_query.clear();
                     view.load_current(cx);
@@ -3370,16 +3619,38 @@ impl Render for ReaderView {
                     }
                     "b" => view.toggle_bookmark(window, cx),
                     "c" => view.copy_selection(window, cx),
+                    "p" => {
+                        view.panel = if view.panel == Panel::Typography {
+                            Panel::None
+                        } else {
+                            Panel::Typography
+                        };
+                        cx.notify();
+                    }
                     "l" => {
                         window.set_window_title("eParna");
                         view.go_library(cx);
                     }
                     _ => {}
                 }
-            } else if !alt {
+            } else if alt {
+                if key == "ArrowLeft" || key == "Left" {
+                    view.jump_back(cx);
+                }
+            } else {
                 match key {
                     "ArrowRight" | "PageDown" | "j" => view.next(cx),
                     "ArrowLeft" | "PageUp" | "k" => view.prev(cx),
+                    "Backspace" if !view.show_library => view.jump_back(cx),
+                    "z" if !view.show_library => view.toggle_zen_mode(cx),
+                    "p" if !view.show_library => {
+                        view.panel = if view.panel == Panel::Typography {
+                            Panel::None
+                        } else {
+                            Panel::Typography
+                        };
+                        cx.notify();
+                    }
                     " " => {
                         if event.keystroke.modifiers.shift {
                             view.prev(cx);
@@ -3503,7 +3774,41 @@ impl Render for ReaderView {
             body
         };
 
-        let root =
+        let root = if self.zen_mode && self.modal.is_none() && !self.passphrase_modal {
+            v_flex()
+                .size_full()
+                .min_w(px(0.0))
+                .overflow_hidden()
+                .bg(bg)
+                .text_color(fg)
+                .on_key_down(on_key)
+                .child(
+                    h_flex()
+                        .w_full()
+                        .justify_between()
+                        .items_center()
+                        .px_4()
+                        .py_1()
+                        .child(
+                            div()
+                                .text_size(px(11.0))
+                                .child(format!("{:.0}%", progress)),
+                        )
+                        .child(
+                            Button::new("exit-zen")
+                                .ghost()
+                                .label("Exit Zen (Esc / Z)")
+                                .on_click(cx.listener(|v, _, _, cx| v.toggle_zen_mode(cx))),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .size_full()
+                        .overflow_hidden()
+                        .child(body),
+                )
+        } else {
             v_flex()
                 .size_full()
                 .min_w(px(0.0))
@@ -3522,7 +3827,8 @@ impl Render for ReaderView {
                         format!("{} — {}", status, self.selection_status)
                     },
                 ))
-                .child(body);
+                .child(body)
+        };
 
         root.into_any_element()
     }
