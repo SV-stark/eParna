@@ -3,7 +3,7 @@ name = "eparna"
 version = "0.7.0"
 edition = "2024"
 # Minimum supported Rust version. Edition 2024 requires Rust 1.85 or newer,
-# ebook-rs 0.17.3 requires Rust 1.88, and the locked dependency graph
+# ebook-rs 0.18.0 requires Rust 1.88, and the locked dependency graph
 # (e.g. ordered-float 5.5.0) requires Rust 1.90; declaring it explicitly
 # makes cargo enforce the floor and keeps dependabot, cargo-deny and the CI
 # toolchain honest about it.
@@ -42,8 +42,8 @@ icon = [
 ]
 
 [dependencies]
-gpui-kit = "0.7.3"
-ebook-rs = { version = "0.17.3", default-features = false, features = [
+gpui-kit = "0.8.1"
+ebook-rs = { version = "0.18.0", default-features = false, features = [
     "serde",
     "opds",
     "pdf",
@@ -53,11 +53,7 @@ ebook-rs = { version = "0.17.3", default-features = false, features = [
 ] }
 base64 = "0.23"
 flate2 = "1"
-# Pin: office_oxide 0.1.12+ added a required `defined_names` field to `DocumentIR`,
-# which breaks pdf_oxide 0.3.78's struct literal. 0.1.11 is the last compatible
-# release, so we force it for the whole dependency graph.
-office_oxide = { version = "=0.1.11", default-features = false }
-rfd = "0.15"
+rfd = "0.17"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ureq = "3"

@@ -23,33 +23,15 @@ version = 2
 # "deny" once we are happy with the current set.
 unmaintained = "workspace"
 ignore = [
-    # RUSTSEC-2026-0367 / 0368 / 0369 - all three are in the same family:
-    # zip's extraction APIs (`ZipArchive::extract()`, `ZipStreamReader::extract()`)
-    # are unsafe for untrusted archives -
-    #   0367: preserves SUID/SGID/sticky bits (local privesc when a privileged
-    #         process extracts an attacker's archive)
-    #   0368: creates symlinks whose targets are not confined to the
-    #         destination directory (arbitrary file write)
-    #   0369: applies Unix permissions through those symlinks
-    #
-    # ebook-rs 0.17.3 itself moved to zip 9.0.5, but the pdf_oxide 0.3.78 ->
-    # office_oxide 0.1.11 transitive path still pulls zip 8.6.0, which is
-    # vulnerable. The pin is forced (office_oxide 0.1.12+ breaks pdf_oxide
-    # 0.3.78's `DocumentIR` struct literal), so the vulnerable zip remains
-    # in the graph until pdf_oxide ships a release compatible with
-    # office_oxide 0.1.12+.
-    #
-    # Why it is acceptable in eParna: every one of these lives on the
-    # *extract-to-filesystem* path. eParna only ever reads individual entries
-    # out of ebook containers in memory (EpubArchive::read_bytes); no
-    # attacker-supplied archive is ever extracted onto disk, and eParna never
-    # runs privileged.
-    #
-    # Review trigger: a pdf_oxide release compatible with office_oxide >= 0.1.12.
-    # Drop these entries when that lands.
-    { id = "RUSTSEC-2026-0367" },
-    { id = "RUSTSEC-2026-0368" },
-    { id = "RUSTSEC-2026-0369" },
+    # RUSTSEC-2026-0391 / 0398 / 0403:
+    # Transitive dependencies from ebook-rs 0.18.0 (zstd 0.13.3 / zstd-safe 7.3.0).
+    # These advisories affect multi-stream context reuse and seekable frame error handling
+    # in stream decoders. In eParna, zstd is only an optional state cache format inside
+    # ebook-rs and is not exposed to multi-tenant stream decoders or untrusted seekable streams.
+    # Review trigger: ebook-rs bumps to zstd >= 0.14.3 / zstd-safe >= 8.2.0.
+    { id = "RUSTSEC-2026-0391" },
+    { id = "RUSTSEC-2026-0398" },
+    { id = "RUSTSEC-2026-0403" },
 ]
 
 [bans]

@@ -6,6 +6,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Amazon KFX (.kfx) Export**: Added native KFX export via `Book::export_kfx_bytes()` in the Actions panel, enabling export from any supported ebook format to clean Kindle Format 10 containers.
+- **Academic Citation Exporter**: Added interactive Citations modal exporting BibTeX, APA (7th ed.), MLA (9th ed.), and Chicago (17th ed.) citations via `ebook-rs`.
+- **Page Geometry & Viewport Dimensions**: Book Info now inspects and displays exact page dimensions (width × height pt) for PDF documents and Fixed-Layout EPUB sections.
+- **Automatic Language Detection**: Book Info now displays trigram-based auto-detected language in addition to metadata language tags.
+- **Structured Markdown & Table Styling**: Theme CSS resets now properly style tables, code blocks, and blockquotes across Dark, Sepia, Nord, Solarized, and E-Ink themes.
+
+### Changed & Improved
+- **Upgraded `ebook-rs` to `v0.18.0`**:
+  - Pure in-memory PDF parsing via `unpdf 0.51` with zero disk spooling (no temporary file creation or deletion).
+  - Rich PDF metadata extraction (real document title, author, subject, keywords).
+  - Two-column reading-order reflow and structured Markdown extraction for PDF pages.
+- **Dependency Graph Hardening & Pruning**:
+  - Completely removed the `office_oxide = "=0.1.11"` transitive pin, pruning over 800 lines of heavy dependencies including `office_oxide`, `pdf_oxide`, `ttf-parser`, and vulnerable `zip 8.6.0`.
+  - Updated `rustls-webpki` to `0.103.16` and `webpki-roots` to `1.0.11`.
+  - Cleaned up obsolete advisories in `deny.toml`.
+
 ## [0.7.0] - 2026-10-27
 
 ### Added

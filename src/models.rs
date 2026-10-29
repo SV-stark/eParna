@@ -1,6 +1,14 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+pub fn default_reading_status() -> String {
+    "reading".into()
+}
+
+pub fn default_highlight_color() -> String {
+    "yellow".into()
+}
+
 #[derive(Clone, Serialize, Deserialize, Default)]
 pub struct RecentBook {
     pub path: String,
@@ -9,6 +17,9 @@ pub struct RecentBook {
     pub opened: String,
     #[serde(default)]
     pub favorite: bool,
+    /// Reading status: "reading", "want", "finished"
+    #[serde(default = "default_reading_status")]
+    pub status: String,
     /// SHA-256 content hash from `Book::fingerprint()`, used to dedupe the library.
     #[serde(default)]
     pub content_hash: String,
@@ -33,7 +44,7 @@ pub struct RecentBook {
     pub reading_time_secs: u64,
 }
 
-#[derive(Clone, Serialize, Deserialize, Default)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Annotation {
     pub section: usize,
     /// For a note this is the note text; for a highlight it is empty.
@@ -46,6 +57,22 @@ pub struct Annotation {
     #[serde(default)]
     pub kind: String,
     pub created: String,
+    /// Highlight color: "yellow", "green", "blue", "pink", "purple"
+    #[serde(default = "default_highlight_color")]
+    pub color: String,
+}
+
+impl Default for Annotation {
+    fn default() -> Self {
+        Self {
+            section: 0,
+            note: String::new(),
+            quote: String::new(),
+            kind: "highlight".into(),
+            created: String::new(),
+            color: "yellow".into(),
+        }
+    }
 }
 
 impl Annotation {
@@ -58,15 +85,44 @@ impl Annotation {
         }
     }
 
+    pub fn highlight_style(&self) -> &'static str {
+        match self.color.as_str() {
+            "green" => {
+                "background-color: rgba(76, 175, 80, 0.40); border-radius: 2px; padding: 0 2px;"
+            }
+            "blue" => {
+                "background-color: rgba(33, 150, 243, 0.35); border-radius: 2px; padding: 0 2px;"
+            }
+            "pink" => {
+                "background-color: rgba(233, 30, 99, 0.35); border-radius: 2px; padding: 0 2px;"
+            }
+            "purple" => {
+                "background-color: rgba(156, 39, 176, 0.35); border-radius: 2px; padding: 0 2px;"
+            }
+            _ => "background-color: rgba(255, 235, 59, 0.45); border-radius: 2px; padding: 0 2px;",
+        }
+    }
+
+    pub fn color_badge(&self) -> &'static str {
+        match self.color.as_str() {
+            "green" => "[G]",
+            "blue" => "[B]",
+            "pink" => "[P]",
+            "purple" => "[V]",
+            _ => "[Y]",
+        }
+    }
+
     /// Short human label for the sidebar.
     pub fn summary(&self) -> String {
         if self.is_highlight() {
             let q: String = self.quote.chars().take(60).collect();
+            let badge = self.color_badge();
             if self.note.is_empty() {
-                format!("“{}”", q)
+                format!("{badge} “{}”", q)
             } else {
                 format!(
-                    "“{}” — {}",
+                    "{badge} “{}” — {}",
                     q,
                     self.note.chars().take(40).collect::<String>()
                 )
@@ -79,6 +135,10 @@ impl Annotation {
 
 fn default_view_mode() -> String {
     "grid".into()
+}
+
+pub fn default_wpm() -> u32 {
+    220
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -97,6 +157,9 @@ pub struct PersistedState {
     pub dark: bool,
     pub custom_bg: String,
     pub custom_fg: String,
+    /// Estimated reading speed in Words Per Minute.
+    #[serde(default = "default_wpm")]
+    pub wpm: u32,
     /// Lifetime reading time across all books in seconds.
     #[serde(default)]
     pub total_reading_secs: u64,
@@ -124,6 +187,7 @@ impl Default for PersistedState {
             dark: false,
             custom_bg: "#ffffff".into(),
             custom_fg: "#202020".into(),
+            wpm: 220,
             total_reading_secs: 0,
             library_folders: Vec::new(),
             library_view_mode: "grid".into(),

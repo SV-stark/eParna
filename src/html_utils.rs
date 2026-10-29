@@ -49,15 +49,28 @@ pub fn constrain_images(html: &str, column_px: f32) -> String {
     out
 }
 
-/// Generate CSS overrides for Dark and Sepia themes to prevent publisher stylesheets
-/// with hardcoded black text or white backgrounds from blinding the reader.
+/// Generate CSS overrides for Dark, Sepia, Nord, Solarized, and E-Ink themes
+/// to prevent publisher stylesheets with hardcoded black text or white backgrounds
+/// from blinding the reader.
 pub fn theme_style_override(theme: &str) -> &'static str {
     match theme {
         "Dark" => {
-            "<style>body, div, p, span, li, h1, h2, h3, h4, h5, h6 { color: inherit !important; background-color: transparent !important; } a { color: #8ab4f8 !important; }</style>"
+            "<style>body, div, p, span, li, h1, h2, h3, h4, h5, h6, table, tr, th, td, blockquote, pre, code { color: #e0e0e0 !important; background-color: transparent !important; } a { color: #8ab4f8 !important; } table { border-collapse: collapse; } th, td { border: 1px solid #444; padding: 4px 8px; } blockquote { border-left: 3px solid #666; margin: 1em 0; padding-left: 1em; }</style>"
         }
         "Sepia" => {
-            "<style>body, div, p, span, li, h1, h2, h3, h4, h5, h6 { color: #5b4636 !important; background-color: transparent !important; } a { color: #8c5b36 !important; }</style>"
+            "<style>body, div, p, span, li, h1, h2, h3, h4, h5, h6, table, tr, th, td, blockquote, pre, code { color: #5b4636 !important; background-color: transparent !important; } a { color: #8c5b36 !important; } table { border-collapse: collapse; } th, td { border: 1px solid #c8b9a6; padding: 4px 8px; } blockquote { border-left: 3px solid #8c5b36; margin: 1em 0; padding-left: 1em; }</style>"
+        }
+        "Nord" => {
+            "<style>body, div, p, span, li, h1, h2, h3, h4, h5, h6, table, tr, th, td, blockquote, pre, code { color: #eceff4 !important; background-color: transparent !important; } a { color: #88c0d0 !important; } table { border-collapse: collapse; } th, td { border: 1px solid #4c566a; padding: 4px 8px; } blockquote { border-left: 3px solid #88c0d0; margin: 1em 0; padding-left: 1em; }</style>"
+        }
+        "Solarized" => {
+            "<style>body, div, p, span, li, h1, h2, h3, h4, h5, h6, table, tr, th, td, blockquote, pre, code { color: #657b83 !important; background-color: transparent !important; } a { color: #268bd2 !important; } table { border-collapse: collapse; } th, td { border: 1px solid #93a1a1; padding: 4px 8px; } blockquote { border-left: 3px solid #268bd2; margin: 1em 0; padding-left: 1em; }</style>"
+        }
+        "Solarized Dark" => {
+            "<style>body, div, p, span, li, h1, h2, h3, h4, h5, h6, table, tr, th, td, blockquote, pre, code { color: #839496 !important; background-color: transparent !important; } a { color: #2aa198 !important; } table { border-collapse: collapse; } th, td { border: 1px solid #586e75; padding: 4px 8px; } blockquote { border-left: 3px solid #2aa198; margin: 1em 0; padding-left: 1em; }</style>"
+        }
+        "E-Ink" => {
+            "<style>body, div, p, span, li, h1, h2, h3, h4, h5, h6, table, tr, th, td, blockquote, pre, code { color: #000000 !important; background-color: transparent !important; font-weight: 500 !important; } a { color: #000000 !important; text-decoration: underline !important; } table { border-collapse: collapse; } th, td { border: 1px solid #000; padding: 4px 8px; } blockquote { border-left: 3px solid #000; margin: 1em 0; padding-left: 1em; }</style>"
         }
         _ => "",
     }
@@ -122,7 +135,8 @@ pub fn highlight_in_html(html: &str, query: &str, style: &str) -> String {
 }
 
 /// Turn a section's `processed_html` into something the GPUI renderer can show,
-/// with dark-mode styling overrides, visual in-text highlights, and active search highlights.
+/// with dark-mode styling overrides, visual in-text highlights, active search highlights,
+/// and optional text justification.
 pub fn prepare_section_html(
     html: &str,
     book: &Book,
@@ -130,19 +144,16 @@ pub fn prepare_section_html(
     annotations: &[Annotation],
     active_search: Option<&str>,
     theme: &str,
+    justify: bool,
 ) -> String {
     let body = strip_element(&strip_element(html, "head"), "title");
     let mut body = inline_svg_images(&body, book, section_path);
     body = make_images_clickable(&body);
 
-    // Apply persistent visual highlights for quotes in this section
+    // Apply persistent visual highlights with their respective color styles
     for a in annotations {
         if a.is_highlight() && !a.quote.trim().is_empty() {
-            body = highlight_in_html(
-                &body,
-                &a.quote,
-                "background-color: rgba(255, 235, 59, 0.45); border-radius: 2px; padding: 0 2px;",
-            );
+            body = highlight_in_html(&body, &a.quote, a.highlight_style());
         }
     }
 
@@ -157,10 +168,13 @@ pub fn prepare_section_html(
         );
     }
 
-    // Prepend theme CSS reset for dark and sepia modes
-    let css_override = theme_style_override(theme);
-    if !css_override.is_empty() {
-        format!("{css_override}{body}")
+    // Prepend theme CSS reset and text justification rules
+    let mut prefix = theme_style_override(theme).to_string();
+    if justify {
+        prefix.push_str("<style>body, div, p, span, li { text-align: justify !important; text-justify: inter-word !important; hyphens: auto !important; }</style>");
+    }
+    if !prefix.is_empty() {
+        format!("{prefix}{body}")
     } else {
         body
     }
@@ -376,8 +390,10 @@ mod tests {
 
     #[test]
     fn test_theme_style_override() {
-        assert!(theme_style_override("Dark").contains("inherit !important"));
+        assert!(theme_style_override("Dark").contains("#e0e0e0 !important"));
         assert!(theme_style_override("Sepia").contains("#5b4636 !important"));
+        assert!(theme_style_override("Nord").contains("#eceff4 !important"));
+        assert!(theme_style_override("Solarized").contains("#657b83 !important"));
         assert_eq!(theme_style_override("Light"), "");
     }
 }

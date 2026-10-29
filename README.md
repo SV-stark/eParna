@@ -212,11 +212,9 @@ All three are on `ZipArchive::extract()` — the *extract an archive onto disk*
 API. eParna never calls it: ebook containers are read entry-by-entry in memory
 via `EpubArchive::read_bytes`, and the app never runs with elevated privileges.
 
-The upstream fixes only exist in `zip >= 9.0.0`, which cannot be taken yet
-because both copies are major-version-pinned by our dependencies
-(`ebook-rs 0.17.1` → `zip 7.4.0`, `office_oxide 0.1.11` → `zip 8.6.0`). These
-exceptions should be deleted as soon as an `ebook-rs` release depends on
-`zip >= 9`.
+The upstream fixes exist in `zip >= 9.0.0`, which `ebook-rs 0.18.0` and the entire
+dependency graph now use uniformly. The old `zip 8.6.0` transitive vulnerability
+via `office_oxide` has been completely eliminated.
 
 ### Reporting a vulnerability
 
@@ -270,24 +268,18 @@ eParna/
 
 | Crate     | Version | Purpose                          |
 |-----------|---------|----------------------------------|
-| ebook-rs  | 0.17.1  | Ebook parsing, search, TOC, covers, validation, EPUB export |
-| gpui-kit  | 0.7.3   | UI framework & components        |
-| rfd       | 0.15    | Native file dialogs              |
+| ebook-rs  | 0.18.0  | Ebook parsing, search, TOC, covers, validation, EPUB & KFX export, citations |
+| gpui-kit  | 0.8.1   | UI framework & components        |
+| rfd       | 0.17    | Native file dialogs              |
 | serde     | 1       | State serialization              |
 | serde_json| 1       | State (de)serialization          |
 | ureq      | 3       | OPDS catalogs & online lookups   |
 | base64    | 0.23    | Cover thumbnails                 |
-| office_oxide | `=0.1.11` | Pin only — not called directly (see below) |
 
 `ebook-rs` is used with the `serde`, `opds`, `pdf`, `parallel`, `mmap` and `zstd`
-features enabled (PDF parsing, parallel ZIP export, memory-mapped I/O and Zstd
-state caching).
-
-The `office_oxide = "=0.1.11"` entry is a **pin, not a real dependency** — we do
-not call it directly. `office_oxide` 0.1.12 added a required `defined_names`
-field to `DocumentIR`, which breaks `pdf_oxide` 0.3.78's struct literal and
-therefore the `pdf` feature. Dependabot is configured never to bump it
-automatically. See the comment in `Cargo.toml`.
+features enabled (in-memory PDF parsing via `unpdf`, parallel ZIP export, memory-mapped I/O and Zstd
+state caching). With `ebook-rs 0.18.0`, PDF parsing is purely in-memory (no disk spooling)
+and the previous transitive dependency pin on `office_oxide = "=0.1.11"` has been eliminated.
 
 ## License
 

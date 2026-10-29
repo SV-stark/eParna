@@ -31,6 +31,20 @@ fn href_to_index(book: &ebook_rs::Book, href: &str) -> Option<usize> {
         .position(|s| s.href == href || s.full_path.ends_with(href) || href.ends_with(&s.href))
 }
 
+fn url_encode(s: &str) -> String {
+    let mut encoded = String::new();
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.' || b == b'~' {
+            encoded.push(b as char);
+        } else if b == b' ' {
+            encoded.push('+');
+        } else {
+            encoded.push_str(&format!("%{:02X}", b));
+        }
+    }
+    encoded
+}
+
 fn notify_simple(window: &mut Window, cx: &mut Context<ReaderView>, title: &str, message: String) {
     use gpui_kit::component::WindowExt;
     window.push_notification(
@@ -115,6 +129,12 @@ struct ReaderView {
 
     // Manga & Arabic/Hebrew Right-to-Left (RTL) reading flow
     rtl_mode: bool,
+
+    // Highlight color selection: yellow, green, blue, pink, purple
+    highlight_color: String,
+
+    // Library shelf filter: 0 = All, 1 = Reading, 2 = Favorites, 3 = Finished, 4 = Want to Read
+    library_shelf_filter: usize,
 }
 
 impl ReaderView {
@@ -200,6 +220,10 @@ impl ReaderView {
         match self.theme.as_str() {
             "Dark" => (rgb(0x1e1e1e).into(), rgb(0xe0e0e0).into()),
             "Sepia" => (rgb(0xf4ecd8).into(), rgb(0x5b4636).into()),
+            "Nord" => (rgb(0x2e3440).into(), rgb(0xeceff4).into()),
+            "Solarized" => (rgb(0xfdf6e3).into(), rgb(0x657b83).into()),
+            "Solarized Dark" => (rgb(0x002b36).into(), rgb(0x839496).into()),
+            "E-Ink" => (rgb(0xffffff).into(), rgb(0x000000).into()),
             "Custom" => (
                 Self::parse_hex_color(&self.custom_bg).unwrap_or(rgb(0xffffff).into()),
                 Self::parse_hex_color(&self.custom_fg).unwrap_or(rgb(0x202020).into()),
@@ -317,6 +341,8 @@ impl ReaderView {
             show_find_bar: false,
             active_search_query: String::new(),
             rtl_mode: false,
+            highlight_color: "yellow".into(),
+            library_shelf_filter: 0,
         };
 
         if view.show_library {
@@ -388,6 +414,7 @@ impl ReaderView {
                     section: 0,
                     opened: now.clone(),
                     favorite: false,
+                    status: "reading".into(),
                     content_hash,
                     cfi: String::new(),
                     author,
@@ -561,6 +588,7 @@ impl ReaderView {
                             section: 0,
                             opened: now,
                             favorite: was_fav,
+                            status: "reading".into(),
                             content_hash,
                             cfi: String::new(),
                             author: author.clone(),
@@ -634,6 +662,7 @@ impl ReaderView {
                         &current_annotations,
                         active_search,
                         &self.theme,
+                        self.justify,
                     );
                 }
                 Err(e) => {
@@ -873,6 +902,7 @@ impl ReaderView {
                 quote,
                 kind: "highlight".into(),
                 created: Self::now_secs(),
+                color: self.highlight_color.clone(),
             },
             cx,
         );
@@ -895,6 +925,7 @@ impl ReaderView {
                 quote,
                 kind: "note".into(),
                 created: Self::now_secs(),
+                color: self.highlight_color.clone(),
             },
             cx,
         );
@@ -997,6 +1028,77 @@ impl ReaderView {
                     ),
             );
 
+        v = v.child(
+            h_flex()
+                .gap_2()
+                .items_center()
+                .child(
+                    Button::new("shelf_all")
+                        .ghost()
+                        .label(if self.library_shelf_filter == 0 {
+                            "● All"
+                        } else {
+                            "All"
+                        })
+                        .on_click(cx.listener(|v, _, _, cx| {
+                            v.library_shelf_filter = 0;
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    Button::new("shelf_reading")
+                        .ghost()
+                        .label(if self.library_shelf_filter == 1 {
+                            "● Reading"
+                        } else {
+                            "Reading"
+                        })
+                        .on_click(cx.listener(|v, _, _, cx| {
+                            v.library_shelf_filter = 1;
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    Button::new("shelf_fav")
+                        .ghost()
+                        .label(if self.library_shelf_filter == 2 {
+                            "● Favorites"
+                        } else {
+                            "Favorites"
+                        })
+                        .on_click(cx.listener(|v, _, _, cx| {
+                            v.library_shelf_filter = 2;
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    Button::new("shelf_fin")
+                        .ghost()
+                        .label(if self.library_shelf_filter == 3 {
+                            "● Finished"
+                        } else {
+                            "Finished"
+                        })
+                        .on_click(cx.listener(|v, _, _, cx| {
+                            v.library_shelf_filter = 3;
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    Button::new("shelf_want")
+                        .ghost()
+                        .label(if self.library_shelf_filter == 4 {
+                            "● Want to Read"
+                        } else {
+                            "Want to Read"
+                        })
+                        .on_click(cx.listener(|v, _, _, cx| {
+                            v.library_shelf_filter = 4;
+                            cx.notify();
+                        })),
+                ),
+        );
+
         v = v.child(Input::new(&self.library_search_input));
         let q = self.library_search_input.read(cx).value().to_lowercase();
         let mut recent = self.state.recent.clone();
@@ -1062,6 +1164,15 @@ impl ReaderView {
                 if self.library_favorites_only && !r.favorite {
                     continue;
                 }
+                match self.library_shelf_filter {
+                    1 if r.status == "finished" || r.status == "want" => continue,
+                    2 if !r.favorite => continue,
+                    3 if r.status != "finished" && !(r.total > 0 && r.section + 1 >= r.total) => {
+                        continue;
+                    }
+                    4 if r.status != "want" => continue,
+                    _ => {}
+                }
                 if !q.is_empty()
                     && !r.title.to_lowercase().contains(&q)
                     && !r.author.to_lowercase().contains(&q)
@@ -1085,6 +1196,15 @@ impl ReaderView {
                 let on_fav = {
                     let p = r.path.clone();
                     cx.listener(move |view, _ev, _w, cx| view.toggle_favorite(p.clone(), cx))
+                };
+                let on_status = {
+                    let p = r.path.clone();
+                    cx.listener(move |view, _ev, _w, cx| view.cycle_book_status(p.clone(), cx))
+                };
+                let status_badge = match r.status.as_str() {
+                    "finished" => "Done",
+                    "want" => "Want",
+                    _ => "Reading",
                 };
 
                 list_col = list_col.child(
@@ -1132,6 +1252,12 @@ impl ReaderView {
                                         .on_click(on_open),
                                 )
                                 .child(
+                                    Button::new(format!("{id}-st"))
+                                        .ghost()
+                                        .label(status_badge)
+                                        .on_click(on_status),
+                                )
+                                .child(
                                     Button::new(format!("{id}-fav"))
                                         .ghost()
                                         .label(star_label(r.favorite))
@@ -1162,6 +1288,15 @@ impl ReaderView {
                 if self.library_favorites_only && !r.favorite {
                     continue;
                 }
+                match self.library_shelf_filter {
+                    1 if r.status == "finished" || r.status == "want" => continue,
+                    2 if !r.favorite => continue,
+                    3 if r.status != "finished" && !(r.total > 0 && r.section + 1 >= r.total) => {
+                        continue;
+                    }
+                    4 if r.status != "want" => continue,
+                    _ => {}
+                }
                 if !q.is_empty()
                     && !r.title.to_lowercase().contains(&q)
                     && !r.author.to_lowercase().contains(&q)
@@ -1186,6 +1321,15 @@ impl ReaderView {
                     let p = r.path.clone();
                     cx.listener(move |view, _ev, _w, cx| view.toggle_favorite(p.clone(), cx))
                 };
+                let on_status = {
+                    let p = r.path.clone();
+                    cx.listener(move |view, _ev, _w, cx| view.cycle_book_status(p.clone(), cx))
+                };
+                let status_badge = match r.status.as_str() {
+                    "finished" => "Done",
+                    "want" => "Want",
+                    _ => "Reading",
+                };
                 grid = grid.child(grid_tile(
                     id.clone(),
                     cover_for(&self.covers, r),
@@ -1203,6 +1347,12 @@ impl ReaderView {
                                     "Open"
                                 })
                                 .on_click(on_open),
+                        )
+                        .child(
+                            Button::new(format!("{id}-st"))
+                                .ghost()
+                                .label(status_badge)
+                                .on_click(on_status),
                         )
                         .child(
                             Button::new(format!("{id}-fav"))
@@ -1467,6 +1617,13 @@ impl ReaderView {
         }
         out.push_str(&format!("{} sections\n", book.sections().len()));
 
+        // Display current section page / viewport dimensions if present (e.g. PDF or Fixed-Layout)
+        if let Ok(sec) = book.get_section(self.current)
+            && let (Some(w), Some(h)) = (sec.viewport_width, sec.viewport_height)
+        {
+            out.push_str(&format!("Page size: {:.0} × {:.0} pt\n", w, h));
+        }
+
         if let Some(path) = &self.book_path {
             let key = path.to_string_lossy().to_string();
             if let Some(r) = self.state.recent.iter().find(|r| r.path == key) {
@@ -1494,8 +1651,10 @@ impl ReaderView {
         ));
 
         out.push('\n');
+        let detected_lang = book.detect_language();
         for (label, value) in [
             ("Language", Some(m.language().to_string())),
+            ("Detected Language", detected_lang),
             ("Published", m.pub_date.clone()),
             ("Identifier", m.identifier.clone()),
             ("Rights", m.rights.clone()),
@@ -1580,18 +1739,82 @@ impl ReaderView {
         cx.notify();
     }
     fn cycle_theme(&mut self, cx: &mut Context<Self>) {
-        self.theme = if self.theme == "Light" {
-            "Dark".into()
-        } else if self.theme == "Dark" {
-            "Sepia".into()
-        } else if self.theme == "Sepia" {
-            "Custom".into()
-        } else {
-            "Light".into()
+        self.theme = match self.theme.as_str() {
+            "Light" => "Dark".into(),
+            "Dark" => "Sepia".into(),
+            "Sepia" => "Nord".into(),
+            "Nord" => "Solarized".into(),
+            "Solarized" => "Solarized Dark".into(),
+            "Solarized Dark" => "E-Ink".into(),
+            "E-Ink" => "Custom".into(),
+            _ => "Light".into(),
         };
-        self.dark = self.theme == "Dark";
+        self.dark = matches!(self.theme.as_str(), "Dark" | "Nord" | "Solarized Dark");
         self.sync_state();
         self.load_current(cx);
+        cx.notify();
+    }
+    fn toggle_rtl(&mut self, cx: &mut Context<Self>) {
+        self.rtl_mode = !self.rtl_mode;
+        cx.notify();
+    }
+    fn cycle_highlight_color(&mut self, cx: &mut Context<Self>) {
+        self.highlight_color = match self.highlight_color.as_str() {
+            "yellow" => "green".into(),
+            "green" => "blue".into(),
+            "blue" => "pink".into(),
+            "pink" => "purple".into(),
+            _ => "yellow".into(),
+        };
+        cx.notify();
+    }
+    fn cycle_book_status(&mut self, path: String, cx: &mut Context<Self>) {
+        if let Some(r) = self.state.recent.iter_mut().find(|r| r.path == path) {
+            r.status = match r.status.as_str() {
+                "reading" => "finished".into(),
+                "finished" => "want".into(),
+                "want" => "reading".into(),
+                _ => "reading".into(),
+            };
+            self.save_state();
+            cx.notify();
+        }
+    }
+    fn show_shortcuts_modal(&mut self, cx: &mut Context<Self>) {
+        let help = "\
+Keyboard Shortcuts:
+
+Navigation:
+  → / PgDown / Space   Next section (or Previous in Manga RTL)
+  ← / PgUp / Shift+Spc Previous section (or Next in Manga RTL)
+  Home                 Jump to beginning of book
+  End                  Jump to end of book
+  Ctrl + O             Open book file
+  Ctrl + L             Return to Library
+  F11                  Toggle Fullscreen
+  Esc                  Close dialog / find bar / exit to library
+
+Reading & Display:
+  + / =                Increase font size
+  - / _                Decrease font size
+  m                    Cycle theme (Light, Dark, Sepia, Nord, Solarized, E-Ink)
+  r                    Toggle Manga / RTL reading flow
+  Ctrl + F             Find in current chapter
+
+Sidebars & Panels:
+  t                    Table of Contents sidebar
+  s                    Search in book sidebar
+  a                    Annotations & Highlights sidebar
+  d                    Dictionary & Reference sidebar
+  b / Ctrl + B         Toggle Bookmark for current section
+  Ctrl + C             Copy selected text
+  ? / F1               This Keyboard Shortcuts cheatsheet";
+
+        self.modal = Some(Modal {
+            title: "Keyboard Shortcuts".into(),
+            body: help.into(),
+            image: None,
+        });
         cx.notify();
     }
     fn toggle_two_page(&mut self, cx: &mut Context<Self>) {
@@ -1653,12 +1876,141 @@ impl ReaderView {
         }
     }
 
+    fn save_as_kfx(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(book) = &self.book else {
+            return;
+        };
+        match book.export_kfx_bytes() {
+            Ok(bytes) => {
+                let name = format!(
+                    "{}.kfx",
+                    book.metadata()
+                        .title
+                        .chars()
+                        .map(|c| {
+                            if c.is_alphanumeric() || c == ' ' || c == '-' {
+                                c
+                            } else {
+                                '_'
+                            }
+                        })
+                        .collect::<String>()
+                );
+                let chosen = rfd::FileDialog::new()
+                    .set_file_name(&name)
+                    .add_filter("Amazon KFX", &["kfx"])
+                    .save_file();
+                if let Some(path) = chosen {
+                    let n = bytes.len();
+                    let ok = std::fs::write(&path, &bytes).is_ok();
+                    notify_simple(
+                        window,
+                        cx,
+                        if ok { "Saved KFX" } else { "Write failed" },
+                        format!("{} ({n} bytes)", path.display()),
+                    );
+                }
+            }
+            Err(e) => notify_simple(window, cx, "Export failed", e),
+        }
+    }
+
+    fn citations_body(&self) -> Option<String> {
+        let book = self.book.as_ref()?;
+        let mut out = String::new();
+        out.push_str("=== BibTeX ===\n");
+        out.push_str(&book.to_bibtex());
+        out.push_str("\n\n=== APA (7th ed.) ===\n");
+        out.push_str(&book.to_apa());
+        out.push_str("\n\n=== MLA (9th ed.) ===\n");
+        out.push_str(&book.to_mla());
+        out.push_str("\n\n=== Chicago (17th ed.) ===\n");
+        out.push_str(&book.to_chicago());
+        Some(out)
+    }
+
+    fn annotations_to_markdown(&self, title: &str, author: &str) -> String {
+        let mut out = String::new();
+        out.push_str("---\n");
+        out.push_str(&format!("title: \"{}\"\n", title.replace('"', "\\\"")));
+        if !author.is_empty() {
+            out.push_str(&format!("author: \"{}\"\n", author.replace('"', "\\\"")));
+        }
+        out.push_str("tags:\n  - reading-notes\n  - eParna\n");
+        out.push_str("---\n\n");
+        out.push_str(&format!("# Reading Notes: {title}\n\n"));
+        if self.annotations.is_empty() {
+            out.push_str("_No annotations yet._\n");
+            return out;
+        }
+        for (i, a) in self.annotations.iter().enumerate() {
+            out.push_str(&format!("### Item #{}\n\n", i + 1));
+            let badge = match a.color.as_str() {
+                "green" => "Green",
+                "blue" => "Blue",
+                "pink" => "Pink",
+                "purple" => "Purple",
+                _ => "Yellow",
+            };
+            out.push_str(&format!(
+                "*Section {} · {} · Color: {} · Date: {}*\n\n",
+                a.section + 1,
+                if a.is_highlight() {
+                    "Highlight"
+                } else {
+                    "Note"
+                },
+                badge,
+                a.created
+            ));
+            if !a.quote.trim().is_empty() {
+                for line in a.quote.trim().lines() {
+                    out.push_str("> ");
+                    out.push_str(line);
+                    out.push('\n');
+                }
+                out.push('\n');
+            }
+            if !a.note.trim().is_empty() {
+                out.push_str(&format!("**Note:** {}\n\n", a.note));
+            }
+        }
+        out
+    }
+
+    fn copy_annotations_markdown(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let title = self
+            .book
+            .as_ref()
+            .map(|b| b.metadata().title.clone())
+            .unwrap_or_else(|| "Untitled".into());
+        let author = self
+            .book
+            .as_ref()
+            .map(|b| b.metadata().creator().to_string())
+            .unwrap_or_default();
+        let md = self.annotations_to_markdown(&title, &author);
+        cx.write_to_clipboard(ClipboardItem::new_string(md));
+        self.selection_status = "Copied notes to clipboard as Markdown".into();
+        notify_simple(
+            window,
+            cx,
+            "Copied Notes",
+            "Formatted Markdown notes copied to clipboard".into(),
+        );
+    }
+
     fn export_annotations(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let title = self
             .book
             .as_ref()
             .map(|b| b.metadata().title.clone())
             .unwrap_or_else(|| "Untitled".into());
+        let author = self
+            .book
+            .as_ref()
+            .map(|b| b.metadata().creator().to_string())
+            .unwrap_or_default();
         let filename = format!(
             "{}_notes.md",
             title
@@ -1677,35 +2029,7 @@ impl ReaderView {
             .add_filter("Markdown", &["md", "markdown"])
             .save_file();
         if let Some(path) = chosen {
-            let mut out = format!("# Notes — {title}\n\n");
-            if self.annotations.is_empty() {
-                out.push_str("_No annotations yet._\n");
-            }
-            for (i, a) in self.annotations.iter().enumerate() {
-                out.push_str(&format!("## {}\n\n", i + 1));
-                out.push_str(&format!(
-                    "*Section {} · {} · {}*\n\n",
-                    a.section + 1,
-                    if a.is_highlight() {
-                        "Highlight"
-                    } else {
-                        "Note"
-                    },
-                    a.created
-                ));
-                if !a.quote.trim().is_empty() {
-                    for line in a.quote.trim().lines() {
-                        out.push_str("> ");
-                        out.push_str(line);
-                        out.push('\n');
-                    }
-                    out.push('\n');
-                }
-                if !a.note.trim().is_empty() {
-                    out.push_str(&a.note);
-                    out.push_str("\n\n");
-                }
-            }
+            let out = self.annotations_to_markdown(&title, &author);
             let ok = std::fs::write(&path, out).is_ok();
             notify_simple(
                 window,
@@ -1929,15 +2253,29 @@ impl Render for ReaderView {
             if let Some(page) = current_page_label(b, self.current) {
                 parts.push(page);
             }
+            let wpm = (self.state.wpm.max(100) as f32).max(100.0);
+            let mut sec_words = 0usize;
             if let Ok(sec) = b.get_section(self.current) {
-                let words = sec.plain_text.split_whitespace().count();
-                if words > 0 {
-                    parts.push(format!("{words} words"));
+                sec_words = sec.plain_text.split_whitespace().count();
+                if sec_words > 0 {
+                    let sec_mins = ((sec_words as f32 / wpm).ceil() as usize).max(1);
+                    parts.push(format!("{sec_words} words (~{sec_mins}m left)"));
+                }
+            }
+            let total_sections = b.sections().len();
+            if total_sections > self.current + 1 && sec_words > 0 {
+                let rem_sec = total_sections - (self.current + 1);
+                let rem_mins =
+                    (((rem_sec * sec_words.max(180)) as f32 / wpm).round() as usize).max(1);
+                if rem_mins >= 60 {
+                    parts.push(format!("~{}h {}m in book", rem_mins / 60, rem_mins % 60));
+                } else {
+                    parts.push(format!("~{rem_mins}m in book"));
                 }
             }
             let mins = self.reading_start.elapsed().as_secs() / 60;
             if mins > 0 {
-                parts.push(format!("{mins} min read"));
+                parts.push(format!("{mins} min session"));
             }
             parts.join("  ·  ")
         } else {
@@ -2069,10 +2407,101 @@ impl Render for ReaderView {
             SidebarMode::Annotations => {
                 let mut v = v_flex().gap_2().p_2();
                 v = v.child(Input::new(&self.annotation_input));
+                let on_copy_md =
+                    cx.listener(|view, _ev, window, cx| view.copy_annotations_markdown(window, cx));
+                let on_export_file =
+                    cx.listener(|view, _ev, window, cx| view.export_annotations(window, cx));
                 v = v.child(
-                    Button::new("addnote")
-                        .label("Add note")
-                        .on_click(on_add_note),
+                    h_flex()
+                        .gap_2()
+                        .child(
+                            Button::new("addnote")
+                                .label("Add note")
+                                .on_click(on_add_note),
+                        )
+                        .child(
+                            Button::new("copymd")
+                                .ghost()
+                                .label("Copy MD")
+                                .on_click(on_copy_md),
+                        )
+                        .child(
+                            Button::new("exportmd")
+                                .ghost()
+                                .label("Export")
+                                .on_click(on_export_file),
+                        ),
+                );
+                v = v.child(
+                    h_flex()
+                        .gap_1()
+                        .items_center()
+                        .child(div().text_size(px(11.0)).child("Color:"))
+                        .child(
+                            Button::new("col-y")
+                                .ghost()
+                                .label(if self.highlight_color == "yellow" {
+                                    "● Yellow"
+                                } else {
+                                    "Yellow"
+                                })
+                                .on_click(cx.listener(|v, _, _, cx| {
+                                    v.highlight_color = "yellow".into();
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            Button::new("col-g")
+                                .ghost()
+                                .label(if self.highlight_color == "green" {
+                                    "● Green"
+                                } else {
+                                    "Green"
+                                })
+                                .on_click(cx.listener(|v, _, _, cx| {
+                                    v.highlight_color = "green".into();
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            Button::new("col-b")
+                                .ghost()
+                                .label(if self.highlight_color == "blue" {
+                                    "● Blue"
+                                } else {
+                                    "Blue"
+                                })
+                                .on_click(cx.listener(|v, _, _, cx| {
+                                    v.highlight_color = "blue".into();
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            Button::new("col-p")
+                                .ghost()
+                                .label(if self.highlight_color == "pink" {
+                                    "● Pink"
+                                } else {
+                                    "Pink"
+                                })
+                                .on_click(cx.listener(|v, _, _, cx| {
+                                    v.highlight_color = "pink".into();
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            Button::new("col-v")
+                                .ghost()
+                                .label(if self.highlight_color == "purple" {
+                                    "● Purple"
+                                } else {
+                                    "Purple"
+                                })
+                                .on_click(cx.listener(|v, _, _, cx| {
+                                    v.highlight_color = "purple".into();
+                                    cx.notify();
+                                })),
+                        ),
                 );
                 for (i, a) in self.annotations.iter().enumerate() {
                     let sec = a.section;
@@ -2236,7 +2665,6 @@ impl Render for ReaderView {
                     let word = view.dictionary_input.read(cx).value().to_string();
                     view.lookup_word(&word, cx);
                 });
-                v = v.child(Button::new("lookup").label("Lookup").on_click(on_lookup));
                 let on_lookup_sel = cx.listener(|view, _ev, window, cx| {
                     let word = Self::selected_text(window, cx);
                     if word.trim().is_empty() {
@@ -2269,21 +2697,30 @@ impl Render for ReaderView {
                             "https://en.wikipedia.org/api/rest_v1/page/summary/{}",
                             query
                         );
-                        let res = match ureq::get(&url).call() {
+                        let res = match ureq::get(&url)
+                            .header(
+                                "User-Agent",
+                                "eParna-Reader/0.7.0 (https://github.com/SV-stark/eParna)",
+                            )
+                            .call()
+                        {
                             Ok(resp) => {
                                 let body = resp.into_body().read_to_string().unwrap_or_default();
-                                if let Some(idx) = body.find("\"extract\":\"") {
-                                    let rest = &body[idx + 11..];
-                                    if let Some(end) = rest.find("\"extract_html\"") {
-                                        rest[..end].trim_end_matches(&['"', ','][..]).to_string()
+                                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+                                    if let Some(extract) =
+                                        json.get("extract").and_then(|v| v.as_str())
+                                    {
+                                        extract.to_string()
                                     } else {
-                                        "No summary found".into()
+                                        "No summary found on Wikipedia".into()
                                     }
                                 } else {
-                                    "No summary found".into()
+                                    "No summary found on Wikipedia".into()
                                 }
                             }
-                            Err(_) => "Wikipedia lookup failed".into(),
+                            Err(_) => {
+                                "Wikipedia lookup failed (network error or page not found)".into()
+                            }
                         };
                         let _ = view.update(cx, |view, cx| {
                             view.dictionary_result = res;
@@ -2292,7 +2729,63 @@ impl Render for ReaderView {
                     })
                     .detach();
                 });
-                v = v.child(Button::new("wiki").label("Wikipedia").on_click(on_wiki));
+                let on_translate = cx.listener(|view, _ev, _w, cx| {
+                    let text = view.dictionary_input.read(cx).value().to_string();
+                    let text = text.trim();
+                    if text.is_empty() {
+                        return;
+                    }
+                    view.dictionary_result = format!("Translating “{}”...", text);
+                    cx.notify();
+                    let encoded = url_encode(text);
+                    cx.spawn(async move |view, cx| {
+                        let url = format!(
+                            "https://api.mymemory.translated.net/get?q={}&langpair=autodetect|en",
+                            encoded
+                        );
+                        let res = match ureq::get(&url)
+                            .header(
+                                "User-Agent",
+                                "eParna-Reader/0.7.0 (https://github.com/SV-stark/eParna)",
+                            )
+                            .call()
+                        {
+                            Ok(resp) => {
+                                let body = resp.into_body().read_to_string().unwrap_or_default();
+                                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+                                    if let Some(trans) = json
+                                        .get("responseData")
+                                        .and_then(|d| d.get("translatedText"))
+                                        .and_then(|t| t.as_str())
+                                    {
+                                        format!("Translation (en):\n{}", trans)
+                                    } else {
+                                        "Could not parse translation response".into()
+                                    }
+                                } else {
+                                    "Invalid translation response".into()
+                                }
+                            }
+                            Err(e) => format!("Translation failed: {e}"),
+                        };
+                        let _ = view.update(cx, |view, cx| {
+                            view.dictionary_result = res;
+                            cx.notify();
+                        });
+                    })
+                    .detach();
+                });
+                v = v.child(
+                    h_flex()
+                        .gap_2()
+                        .child(Button::new("lookup").label("Lookup").on_click(on_lookup))
+                        .child(Button::new("wiki").label("Wikipedia").on_click(on_wiki))
+                        .child(
+                            Button::new("translate")
+                                .label("Translate")
+                                .on_click(on_translate),
+                        ),
+                );
                 v = v.child(
                     div()
                         .text_size(px(12.0))
@@ -2408,6 +2901,12 @@ impl Render for ReaderView {
                                 .label("Highlight")
                                 .on_click(on_highlight),
                         )
+                        .child(
+                            Button::new("hl-col")
+                                .ghost()
+                                .label(format!("[{}]", self.highlight_color))
+                                .on_click(cx.listener(|v, _, _, cx| v.cycle_highlight_color(cx))),
+                        )
                         .child(Button::new("copy").label("Copy").on_click(on_copy))
                         .child(Button::new("find-btn").ghost().label("Find").on_click(
                             cx.listener(|v, _, _, cx| {
@@ -2435,16 +2934,24 @@ impl Render for ReaderView {
                                 cx.notify();
                             },
                         )))
-                        .child(Button::new("more").ghost().label("\u{22ef}").on_click(
-                            cx.listener(|view, _, _, cx| {
-                                view.panel = if view.panel == Panel::Actions {
-                                    Panel::None
-                                } else {
-                                    Panel::Actions
-                                };
-                                cx.notify();
-                            }),
-                        )),
+                        .child(
+                            Button::new("more")
+                                .ghost()
+                                .label("\u{22ef}")
+                                .on_click(cx.listener(|view, _, _, cx| {
+                                    view.panel = if view.panel == Panel::Actions {
+                                        Panel::None
+                                    } else {
+                                        Panel::Actions
+                                    };
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            Button::new("shortcuts-btn").ghost().label("?").on_click(
+                                cx.listener(|view, _, _, cx| view.show_shortcuts_modal(cx)),
+                            ),
+                        ),
                 );
 
         let mut typography_panel = h_flex()
@@ -2524,6 +3031,17 @@ impl Render for ReaderView {
                 cx.listener(|v, _, _, cx| v.cycle_theme(cx)),
             ))
             .child(cycle_row(
+                "Align",
+                if self.justify { "Justify" } else { "Left" },
+                "al",
+                cx.listener(|v, _, _, cx| {
+                    v.justify = !v.justify;
+                    v.sync_state();
+                    v.load_current(cx);
+                    cx.notify();
+                }),
+            ))
+            .child(cycle_row(
                 "Pages",
                 if self.two_page { "two" } else { "one" },
                 "pg",
@@ -2583,6 +3101,22 @@ impl Render for ReaderView {
                     .on_click(cx.listener(|v, _, window, cx| v.save_as_epub(window, cx))),
             )
             .child(
+                Button::new("savekfx")
+                    .ghost()
+                    .label("Save as KFX\u{2026}")
+                    .on_click(cx.listener(|v, _, window, cx| v.save_as_kfx(window, cx))),
+            )
+            .child(
+                Button::new("citations")
+                    .ghost()
+                    .label("Citations\u{2026}")
+                    .on_click(cx.listener(|v, _, _, cx| {
+                        if let Some(body) = v.citations_body() {
+                            v.show_modal("Citations (BibTeX, APA, MLA, Chicago)", body, cx);
+                        }
+                    })),
+            )
+            .child(
                 Button::new("export")
                     .ghost()
                     .label("Export notes\u{2026}")
@@ -2601,6 +3135,12 @@ impl Render for ReaderView {
                     cx.notify();
                 }),
             ))
+            .child(
+                Button::new("sc-modal")
+                    .ghost()
+                    .label("Shortcuts (?)")
+                    .on_click(cx.listener(|v, _, _, cx| v.show_shortcuts_modal(cx))),
+            )
             .child(div().w(px(1.0)).h(px(18.0)).border_l_1())
             .child(Input::new(&self.goto_input).w(px(90.0)))
             .child(
@@ -2708,6 +3248,7 @@ impl Render for ReaderView {
                             &current_annotations,
                             active_search,
                             &self.theme,
+                            self.justify,
                         );
                         constrain_images(&prepared, column_px)
                     })
@@ -2837,8 +3378,15 @@ impl Render for ReaderView {
                 }
             } else if !alt {
                 match key {
-                    "ArrowRight" | "PageDown" => view.next(cx),
-                    "ArrowLeft" | "PageUp" => view.prev(cx),
+                    "ArrowRight" | "PageDown" | "j" => view.next(cx),
+                    "ArrowLeft" | "PageUp" | "k" => view.prev(cx),
+                    " " => {
+                        if event.keystroke.modifiers.shift {
+                            view.prev(cx);
+                        } else {
+                            view.next(cx);
+                        }
+                    }
                     "Home" => view.jump(0, cx),
                     "End" => {
                         if let Some(b) = &view.book {
@@ -2847,6 +3395,28 @@ impl Render for ReaderView {
                         }
                     }
                     "F11" => view.toggle_fullscreen(window, cx),
+                    "?" | "F1" => view.show_shortcuts_modal(cx),
+                    "+" | "=" => view.adjust_font_size(1.0, cx),
+                    "-" | "_" => view.adjust_font_size(-1.0, cx),
+                    "m" if !view.show_library => view.cycle_theme(cx),
+                    "r" if !view.show_library => view.toggle_rtl(cx),
+                    "t" if !view.show_library => {
+                        view.sidebar_mode = SidebarMode::Contents;
+                        cx.notify();
+                    }
+                    "s" if !view.show_library => {
+                        view.sidebar_mode = SidebarMode::Search;
+                        cx.notify();
+                    }
+                    "a" if !view.show_library => {
+                        view.sidebar_mode = SidebarMode::Annotations;
+                        cx.notify();
+                    }
+                    "d" if !view.show_library => {
+                        view.sidebar_mode = SidebarMode::Dictionary;
+                        cx.notify();
+                    }
+                    "b" if !view.show_library => view.toggle_bookmark(window, cx),
                     _ => {}
                 }
             }
