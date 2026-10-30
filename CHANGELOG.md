@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.5] - 2026-10-30
+
 ### Added
 - **New Application Icon & Windows ICO**: Multi-resolution `.ico` icon (`assets/icon.ico`, `assets/icons/icon.ico`, `wix/Product.ico`) and updated PNG suite depicting an open codex with an elegant quill feather nestled between its pages.
 - **Distraction-Free / Zen Reading Mode**: Toggle with `Z`, toolbar header, or Actions panel to strip away all chrome and panels for a pure, serene reading surface.

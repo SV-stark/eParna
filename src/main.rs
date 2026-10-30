@@ -541,12 +541,7 @@ impl ReaderView {
                     .get(&key)
                     .cloned()
                     .unwrap_or_default();
-                self.bookmarks = self
-                    .state
-                    .bookmarks
-                    .get(&key)
-                    .cloned()
-                    .unwrap_or_default();
+                self.bookmarks = self.state.bookmarks.get(&key).cloned().unwrap_or_default();
                 self.nav_history.clear();
                 self.refresh_bookmark_state(window, cx);
 
@@ -764,14 +759,13 @@ impl ReaderView {
     }
 
     fn jump_back(&mut self, cx: &mut Context<Self>) {
-        if let Some(prev) = self.nav_history.pop() {
-            if let Some(book) = &self.book
-                && prev < book.sections().len()
-            {
-                self.current = prev;
-                self.load_current(cx);
-                cx.notify();
-            }
+        if let Some(prev) = self.nav_history.pop()
+            && let Some(book) = &self.book
+            && prev < book.sections().len()
+        {
+            self.current = prev;
+            self.load_current(cx);
+            cx.notify();
         }
     }
 
@@ -1800,7 +1794,10 @@ impl ReaderView {
             "OLED Black" => "Custom".into(),
             _ => "Light".into(),
         };
-        self.dark = matches!(self.theme.as_str(), "Dark" | "OLED Black" | "Nord" | "Solarized Dark");
+        self.dark = matches!(
+            self.theme.as_str(),
+            "Dark" | "OLED Black" | "Nord" | "Solarized Dark"
+        );
         self.sync_state();
         self.load_current(cx);
         cx.notify();
@@ -2012,7 +2009,11 @@ Sidebars & Panels:
             notify_simple(
                 window,
                 cx,
-                if ok { "Saved Plain Text" } else { "Write failed" },
+                if ok {
+                    "Saved Plain Text"
+                } else {
+                    "Write failed"
+                },
                 format!("{} ({n} bytes)", path.display()),
             );
         }
@@ -2537,12 +2538,18 @@ impl Render for ReaderView {
                         ),
                 );
                 if self.bookmarks.is_empty() {
-                    v = v.child(div().text_size(px(12.0)).child("No bookmarks yet in this book."));
+                    v = v.child(
+                        div()
+                            .text_size(px(12.0))
+                            .child("No bookmarks yet in this book."),
+                    );
                 } else {
                     for &sec in &self.bookmarks {
                         let sec_idx = sec;
                         let is_current = sec_idx == self.current;
-                        let label = if let Some((l, _)) = self.toc_items.iter().find(|(_, i)| *i == sec_idx) {
+                        let label = if let Some((l, _)) =
+                            self.toc_items.iter().find(|(_, i)| *i == sec_idx)
+                        {
                             format!("Sec {}: {}", sec_idx + 1, truncate(l.trim(), 22))
                         } else {
                             format!("Section {}", sec_idx + 1)
@@ -2566,7 +2573,11 @@ impl Render for ReaderView {
                                 .child(
                                     Button::new(format!("bmlink_{sec_idx}"))
                                         .ghost()
-                                        .label(if is_current { format!("▶ {label}") } else { label })
+                                        .label(if is_current {
+                                            format!("▶ {label}")
+                                        } else {
+                                            label
+                                        })
                                         .on_click(cx.listener(move |view, _, _, cx| {
                                             view.jump(sec_idx, cx);
                                         })),
@@ -2878,7 +2889,7 @@ impl Render for ReaderView {
                         let res = match ureq::get(&url)
                             .header(
                                 "User-Agent",
-                                "eParna-Reader/0.7.0 (https://github.com/SV-stark/eParna)",
+                                "eParna-Reader/0.7.5 (https://github.com/SV-stark/eParna)",
                             )
                             .call()
                         {
@@ -2924,7 +2935,7 @@ impl Render for ReaderView {
                         let res = match ureq::get(&url)
                             .header(
                                 "User-Agent",
-                                "eParna-Reader/0.7.0 (https://github.com/SV-stark/eParna)",
+                                "eParna-Reader/0.7.5 (https://github.com/SV-stark/eParna)",
                             )
                             .call()
                         {
@@ -3039,7 +3050,11 @@ impl Render for ReaderView {
             );
 
         let is_bm = self.bookmarks.contains(&self.current);
-        let bm_label = if is_bm { "★ Bookmarked" } else { "☆ Bookmark" };
+        let bm_label = if is_bm {
+            "★ Bookmarked"
+        } else {
+            "☆ Bookmark"
+        };
         let back_btn = if let Some(last_sec) = self.nav_history.last() {
             let last_sec = *last_sec;
             Some(
@@ -3098,63 +3113,69 @@ impl Render for ReaderView {
                     .on_click(cx.listener(|v, _, _, cx| v.cycle_highlight_color(cx))),
             )
             .child(Button::new("copy").label("Copy").on_click(on_copy))
-            .child(Button::new("find-btn").ghost().label("Find").on_click(
-                cx.listener(|v, _, _, cx| {
-                    v.show_find_bar = !v.show_find_bar;
-                    cx.notify();
-                }),
-            ));
+            .child(
+                Button::new("find-btn")
+                    .ghost()
+                    .label("Find")
+                    .on_click(cx.listener(|v, _, _, cx| {
+                        v.show_find_bar = !v.show_find_bar;
+                        cx.notify();
+                    })),
+            );
 
-        let header =
-            h_flex()
-                .w_full()
-                .items_center()
-                .gap_2()
-                .px_2()
-                .py_2()
-                .border_b_1()
-                .child(left_controls)
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .items_center()
-                        .child(
-                            div()
-                                .text_size(px(12.0))
-                                .child(format!("{}  ({:.0}%)", pos, progress)),
-                        )
-                        .child(Button::new("zen-hdr").ghost().label("Zen").on_click(
-                            cx.listener(|view, _, _, cx| view.toggle_zen_mode(cx)),
-                        ))
-                        .child(Button::new("aa").ghost().label("Aa").on_click(cx.listener(
-                            |view, _, _, cx| {
-                                view.panel = if view.panel == Panel::Typography {
+        let header = h_flex()
+            .w_full()
+            .items_center()
+            .gap_2()
+            .px_2()
+            .py_2()
+            .border_b_1()
+            .child(left_controls)
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .child(format!("{}  ({:.0}%)", pos, progress)),
+                    )
+                    .child(
+                        Button::new("zen-hdr")
+                            .ghost()
+                            .label("Zen")
+                            .on_click(cx.listener(|view, _, _, cx| view.toggle_zen_mode(cx))),
+                    )
+                    .child(Button::new("aa").ghost().label("Aa").on_click(cx.listener(
+                        |view, _, _, cx| {
+                            view.panel = if view.panel == Panel::Typography {
+                                Panel::None
+                            } else {
+                                Panel::Typography
+                            };
+                            cx.notify();
+                        },
+                    )))
+                    .child(
+                        Button::new("more")
+                            .ghost()
+                            .label("\u{22ef}")
+                            .on_click(cx.listener(|view, _, _, cx| {
+                                view.panel = if view.panel == Panel::Actions {
                                     Panel::None
                                 } else {
-                                    Panel::Typography
+                                    Panel::Actions
                                 };
                                 cx.notify();
-                            },
-                        )))
-                        .child(
-                            Button::new("more")
-                                .ghost()
-                                .label("\u{22ef}")
-                                .on_click(cx.listener(|view, _, _, cx| {
-                                    view.panel = if view.panel == Panel::Actions {
-                                        Panel::None
-                                    } else {
-                                        Panel::Actions
-                                    };
-                                    cx.notify();
-                                })),
-                        )
-                        .child(
-                            Button::new("shortcuts-btn").ghost().label("?").on_click(
-                                cx.listener(|view, _, _, cx| view.show_shortcuts_modal(cx)),
-                            ),
-                        ),
-                );
+                            })),
+                    )
+                    .child(
+                        Button::new("shortcuts-btn")
+                            .ghost()
+                            .label("?")
+                            .on_click(cx.listener(|view, _, _, cx| view.show_shortcuts_modal(cx))),
+                    ),
+            );
 
         let mut typography_panel = h_flex()
             .w_full()
@@ -3378,13 +3399,13 @@ impl Render for ReaderView {
                     .on_click(cx.listener(|v, _ev, _w, cx| {
                         let s = v.goto_input.read(cx).value().trim().to_string();
                         if s.ends_with('%') {
-                            if let Ok(pct) = s.trim_end_matches('%').trim().parse::<f32>() {
-                                if let Some(book) = &v.book {
-                                    let total = book.sections().len();
-                                    if total > 0 {
-                                        let idx = ((pct / 100.0) * (total as f32)).round() as usize;
-                                        v.jump(idx.min(total - 1), cx);
-                                    }
+                            if let Ok(pct) = s.trim_end_matches('%').trim().parse::<f32>()
+                                && let Some(book) = &v.book
+                            {
+                                let total = book.sections().len();
+                                if total > 0 {
+                                    let idx = ((pct / 100.0) * (total as f32)).round() as usize;
+                                    v.jump(idx.min(total - 1), cx);
                                 }
                             }
                         } else if let Ok(n) = s.parse::<usize>() {
@@ -3560,10 +3581,7 @@ impl Render for ReaderView {
             );
 
         let body = if self.zen_mode {
-            h_flex()
-                .size_full()
-                .min_w(px(0.0))
-                .child(content)
+            h_flex().size_full().min_w(px(0.0)).child(content)
         } else {
             h_flex()
                 .size_full()
@@ -3789,11 +3807,7 @@ impl Render for ReaderView {
                         .items_center()
                         .px_4()
                         .py_1()
-                        .child(
-                            div()
-                                .text_size(px(11.0))
-                                .child(format!("{:.0}%", progress)),
-                        )
+                        .child(div().text_size(px(11.0)).child(format!("{:.0}%", progress)))
                         .child(
                             Button::new("exit-zen")
                                 .ghost()
@@ -3801,13 +3815,7 @@ impl Render for ReaderView {
                                 .on_click(cx.listener(|v, _, _, cx| v.toggle_zen_mode(cx))),
                         ),
                 )
-                .child(
-                    div()
-                        .flex_1()
-                        .size_full()
-                        .overflow_hidden()
-                        .child(body),
-                )
+                .child(div().flex_1().size_full().overflow_hidden().child(body))
         } else {
             v_flex()
                 .size_full()

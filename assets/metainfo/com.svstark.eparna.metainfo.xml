@@ -70,6 +70,14 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.7.5" date="2026-10-30">
+      <description>
+        <p>
+          Zen mode, navigation history, OLED Black theme, persistent bookmarks,
+          plain text and Amazon KFX export, academic citations, and new application icon.
+        </p>
+      </description>
+    </release>
     <release version="0.4.0" date="2026-10-18">
       <description>
         <p>

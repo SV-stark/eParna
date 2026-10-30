@@ -1,6 +1,6 @@
 [package]
 name = "eparna"
-version = "0.7.0"
+version = "0.7.5"
 edition = "2024"
 # Minimum supported Rust version. Edition 2024 requires Rust 1.85 or newer,
 # ebook-rs 0.18.0 requires Rust 1.88, and the locked dependency graph
