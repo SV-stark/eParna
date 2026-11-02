@@ -12,6 +12,7 @@
 # Editors / IDEs
 .vscode/
 .idea/
+.cargo/
 *.swp
 *.swo
 *~

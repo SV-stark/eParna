@@ -6,6 +6,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-03
+
+### Changed & Architecture
+- **Migrated to `gpui-fast` + `gpui-kit 0.9.0` Architecture**:
+  - Upgraded `gpui-kit` to `0.9.0` with the `gpui-fast` backend feature enabled.
+  - Leverages GPUI Fast's high-performance layout, rendering, and memory optimizations for silky smooth reading and UI interaction.
+  - Retains full cross-platform compatibility across Windows, macOS, and Linux.
+- **Dependency Graph Update & Security Hardening**:
+  - Ran full `cargo update` bringing locked dependencies to their highest Rust 1.90 compatible releases.
+  - Upgraded `ureq` to `3.5.1`, `zip` to `9.2.2`, `zstd` to `0.13.4`, and `zstd-safe` to `7.4.0`.
+  - Cleaned up obsolete `zstd` security advisories (RUSTSEC-2026-0391, RUSTSEC-2026-0398, RUSTSEC-2026-0403) from `deny.toml`.
+- **Dynamic Application Versioning**:
+  - Replaced hardcoded User-Agent version strings with dynamic compile-time `env!("CARGO_PKG_VERSION")`.
+
 ## [0.7.5] - 2026-10-30
 
 ### Added

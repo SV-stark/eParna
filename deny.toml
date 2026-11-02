@@ -22,17 +22,7 @@ version = 2
 # Unmaintained crates are reported but do not fail the build; bump this to
 # "deny" once we are happy with the current set.
 unmaintained = "workspace"
-ignore = [
-    # RUSTSEC-2026-0391 / 0398 / 0403:
-    # Transitive dependencies from ebook-rs 0.18.0 (zstd 0.13.3 / zstd-safe 7.3.0).
-    # These advisories affect multi-stream context reuse and seekable frame error handling
-    # in stream decoders. In eParna, zstd is only an optional state cache format inside
-    # ebook-rs and is not exposed to multi-tenant stream decoders or untrusted seekable streams.
-    # Review trigger: ebook-rs bumps to zstd >= 0.14.3 / zstd-safe >= 8.2.0.
-    { id = "RUSTSEC-2026-0391" },
-    { id = "RUSTSEC-2026-0398" },
-    { id = "RUSTSEC-2026-0403" },
-]
+ignore = []
 
 [bans]
 # Duplicate versions are normal in a tree this size (gpui pulls in many

@@ -22,7 +22,7 @@ Built on [ebook-rs](https://crates.io/crates/ebook-rs) for multi-format parsing 
   and one-click reopen included.
 - **Deduplication** — the same book opened from another path updates the existing
   entry (content-hash based) instead of adding a duplicate.
-- **GPU-accelerated rendering** — smooth scrolling and responsive navigation powered by gpui.
+- **GPU-accelerated rendering** — smooth scrolling and responsive navigation powered by `gpui-kit` with `gpui-fast` layout and rendering optimizations.
 - **Inlined assets** — images and resources are embedded (base64) by ebook-rs, so sections render offline.
 - **Table of contents** — jump to any chapter via the Contents selector, or deep-search
   the TOC by title with breadcrumbs.
@@ -80,7 +80,7 @@ Prebuilt artifacts are attached to every [GitHub Release](https://github.com/SV-
 | Windows x64 | `eparna-x86_64-pc-windows-msvc.zip` | Portable build, no install needed |
 | macOS (Apple Silicon) | `eparna-aarch64-apple-darwin.pkg` | Double-click installer |
 | macOS (Intel) | `eparna-x86_64-apple-darwin.pkg` | Double-click installer |
-| Linux x64 | `eparna_0.7.5_x86_64.AppImage` | Single file; `chmod +x` and run |
+| Linux x64 | `eparna_0.8.0_x86_64.AppImage` | Single file; `chmod +x` and run |
 | Any | `eparna-installer.sh` / `eparna-installer.ps1` | `curl \| sh` / `irm \| iex` |
 
 Or install with the one-liner scripts:
@@ -269,7 +269,7 @@ eParna/
 | Crate     | Version | Purpose                          |
 |-----------|---------|----------------------------------|
 | ebook-rs  | 0.18.0  | Ebook parsing, search, TOC, covers, validation, EPUB & KFX export, citations |
-| gpui-kit  | 0.8.1   | UI framework & components        |
+| gpui-kit  | 0.9.0   | UI framework & components (powered by gpui-fast) |
 | rfd       | 0.17    | Native file dialogs              |
 | serde     | 1       | State serialization              |
 | serde_json| 1       | State (de)serialization          |

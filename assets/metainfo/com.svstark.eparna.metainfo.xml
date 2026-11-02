@@ -70,6 +70,15 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.8.0" date="2026-11-03">
+      <description>
+        <p>
+          Switched to gpui-fast and gpui-kit 0.9.0 architecture for optimized layout
+          and GPU-accelerated rendering, updated dependencies across the entire graph,
+          and hardened security advisories.
+        </p>
+      </description>
+    </release>
     <release version="0.7.5" date="2026-10-30">
       <description>
         <p>

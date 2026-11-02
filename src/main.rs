@@ -2889,7 +2889,11 @@ impl Render for ReaderView {
                         let res = match ureq::get(&url)
                             .header(
                                 "User-Agent",
-                                "eParna-Reader/0.7.5 (https://github.com/SV-stark/eParna)",
+                                concat!(
+                                    "eParna-Reader/",
+                                    env!("CARGO_PKG_VERSION"),
+                                    " (https://github.com/SV-stark/eParna)"
+                                ),
                             )
                             .call()
                         {
@@ -2935,7 +2939,11 @@ impl Render for ReaderView {
                         let res = match ureq::get(&url)
                             .header(
                                 "User-Agent",
-                                "eParna-Reader/0.7.5 (https://github.com/SV-stark/eParna)",
+                                concat!(
+                                    "eParna-Reader/",
+                                    env!("CARGO_PKG_VERSION"),
+                                    " (https://github.com/SV-stark/eParna)"
+                                ),
                             )
                             .call()
                         {
