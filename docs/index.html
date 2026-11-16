@@ -1,0 +1,549 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="midnight">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>eParna Reader — a quiet place to read</title>
+<meta name="description" content="eParna is a fast, lightweight, cross-platform ebook reader written in pure Rust. Every format you own, one quiet place to read. Fully offline, no tracking.">
+<link rel="canonical" href="https://SV-stark.github.io/eParna/">
+<link rel="icon" href="./assets/icon.png" type="image/png">
+<meta property="og:title" content="eParna Reader">
+<meta property="og:description" content="A fast, lightweight, cross-platform ebook reader written in pure Rust. Every book you own, one quiet place to read.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://SV-stark.github.io/eParna/">
+<meta property="og:image" content="https://SV-stark.github.io/eParna/assets/icon.png">
+<script>
+  // Apply the saved or system theme before first paint.
+  (() => {
+    let theme = null;
+    try { theme = localStorage.getItem("eparna-theme"); } catch {}
+    if (!theme) theme = matchMedia("(prefers-color-scheme: light)").matches ? "paper" : "midnight";
+    document.documentElement.dataset.theme = theme;
+  })();
+</script>
+<style>
+/* ---------- Theme tokens ---------- */
+:root, [data-theme="midnight"] {
+  color-scheme: dark;
+  --bg: #0f111a;
+  --bg-elev: #161a28;
+  --bg-inset: #1b2032;
+  --text: #c6cfe8;
+  --text-strong: #eef2ff;
+  --muted: #8b95b4;
+  --border: #2a3048;
+  --accent: #7aa2f7;
+  --accent-strong: #a7c0ff;
+  --accent-soft: rgba(122, 162, 247, .14);
+  --green: #9ece6a;
+  --green-soft: rgba(158, 206, 106, .16);
+  --code-bg: #111523;
+  --shadow: 0 16px 48px rgba(0, 0, 0, .45);
+  --leaf: #7aa2f7;
+}
+[data-theme="dusk"] {
+  color-scheme: dark;
+  --bg: #1a1620;
+  --bg-elev: #231d2d;
+  --bg-inset: #2c2438;
+  --text: #d9cfe0;
+  --text-strong: #f6eff9;
+  --muted: #a496b1;
+  --border: #3b3149;
+  --accent: #c9a2e6;
+  --accent-strong: #e4c6f7;
+  --accent-soft: rgba(201, 162, 230, .14);
+  --green: #b7d47a;
+  --green-soft: rgba(183, 212, 122, .15);
+  --code-bg: #17121e;
+  --shadow: 0 16px 48px rgba(0, 0, 0, .45);
+  --leaf: #c9a2e6;
+}
+[data-theme="paper"] {
+  color-scheme: light;
+  --bg: #f7f3ea;
+  --bg-elev: #fffdf7;
+  --bg-inset: #efe8d8;
+  --text: #463c2d;
+  --text-strong: #1f1a12;
+  --muted: #81765f;
+  --border: #ddd3bd;
+  --accent: #9a5b2e;
+  --accent-strong: #7c4520;
+  --accent-soft: rgba(154, 91, 46, .10);
+  --green: #4f7a3a;
+  --green-soft: rgba(79, 122, 58, .12);
+  --code-bg: #f0e9da;
+  --shadow: 0 16px 44px rgba(80, 60, 30, .12);
+  --leaf: #9a5b2e;
+}
+
+/* ---------- Base ---------- */
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+html.no-transition, html.no-transition * { transition: none !important; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 16px;
+  line-height: 1.7;
+  -webkit-font-smoothing: antialiased;
+  transition: background .25s ease, color .25s ease;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { color: var(--accent-strong); text-decoration: underline; }
+code, pre, .mono {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+}
+code {
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: .1em .4em;
+  font-size: .88em;
+  color: var(--text-strong);
+}
+::selection { background: var(--accent-soft); color: var(--text-strong); }
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+
+/* ---------- Header ---------- */
+header.bar {
+  position: sticky; top: 0; z-index: 20;
+  background: color-mix(in srgb, var(--bg) 86%, transparent);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border);
+}
+.bar-inner {
+  max-width: 940px; margin: 0 auto; padding: 12px 20px;
+  display: flex; align-items: center; gap: 18px;
+}
+.bar-name {
+  display: flex; align-items: center; gap: 10px;
+  font-weight: 700; font-size: 15px; color: var(--text-strong);
+  white-space: nowrap;
+}
+.bar-name:hover { text-decoration: none; color: var(--text-strong); }
+.bar-name img { width: 26px; height: 26px; border-radius: 6px; }
+.bar-name span { color: var(--muted); font-weight: 500; }
+.bar-links { margin-left: auto; display: flex; align-items: center; gap: 20px; font-size: 14px; }
+.bar-links a { color: var(--muted); font-weight: 500; }
+.bar-links a:hover { color: var(--accent); text-decoration: none; }
+.star-link {
+  border: 1px solid var(--border); border-radius: 999px;
+  padding: 5px 13px; color: var(--text-strong) !important;
+  background: var(--bg-elev);
+}
+.star-link:hover { border-color: var(--accent); color: var(--accent) !important; }
+
+/* ---------- Theme select ---------- */
+label.theme { position: relative; display: inline-flex; align-items: center; }
+.theme-select {
+  appearance: none; -webkit-appearance: none;
+  background: var(--bg-elev); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px;
+  font: inherit; font-size: 13px; font-weight: 500;
+  padding: 6px 28px 6px 11px; cursor: pointer;
+}
+.theme-select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+label.theme .chev {
+  position: absolute; right: 9px; pointer-events: none;
+  width: 9px; height: 9px; border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted); transform: translateY(-2px) rotate(45deg);
+}
+
+/* ---------- Layout ---------- */
+main { max-width: 940px; margin: 0 auto; padding: 0 20px; }
+section { padding: 58px 0 8px; scroll-margin-top: 72px; }
+h1, h2, h3 { color: var(--text-strong); line-height: 1.25; letter-spacing: -.02em; }
+h1 { font-size: clamp(2rem, 5vw, 3.05rem); margin: 0 0 18px; font-weight: 760; }
+h2 { font-size: clamp(1.5rem, 3.4vw, 2rem); margin: 0 0 14px; font-weight: 720; }
+h3 { font-size: 1.02rem; margin: 0 0 6px; font-weight: 680; }
+p { margin: 0 0 14px; }
+.section-desc { color: var(--muted); max-width: 720px; }
+.lead { font-size: 1.12rem; color: var(--text); max-width: 720px; }
+
+/* ---------- Hero ---------- */
+.hero { padding: 70px 0 8px; }
+.hero-label {
+  display: inline-block; color: var(--accent); font-weight: 650;
+  font-size: .82rem; letter-spacing: .08em; text-transform: uppercase;
+  background: var(--accent-soft); border: 1px solid var(--border);
+  padding: 5px 12px; border-radius: 999px; margin-bottom: 22px;
+}
+.hero h1 code { font-size: .92em; }
+.hero .lead strong { color: var(--text-strong); }
+
+/* ---------- Install box ---------- */
+.install {
+  background: var(--bg-elev); border: 1px solid var(--border);
+  border-radius: 14px; overflow: hidden; box-shadow: var(--shadow);
+  margin: 30px 0 18px; max-width: 720px;
+}
+.tabs { display: flex; gap: 2px; padding: 8px 8px 0; border-bottom: 1px solid var(--border); }
+.tab {
+  appearance: none; border: 0; background: transparent; color: var(--muted);
+  font: inherit; font-size: 13.5px; font-weight: 600; cursor: pointer;
+  padding: 9px 14px; border-radius: 8px 8px 0 0;
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+.tab:hover { color: var(--text); }
+.tab[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); }
+.cmd { display: flex; align-items: center; gap: 12px; padding: 16px 18px; }
+.cmd pre {
+  margin: 0; flex: 1; min-width: 0; overflow-x: auto;
+  color: var(--text-strong); font-size: 13.5px; white-space: pre;
+}
+.cmd .prompt { color: var(--accent); user-select: none; }
+.btn {
+  appearance: none; flex: none; width: 38px; height: 38px;
+  border: 1px solid var(--border); border-radius: 9px;
+  background: var(--bg-inset); color: var(--muted); cursor: pointer;
+  display: grid; place-items: center; font-size: 15px;
+}
+.btn:hover { color: var(--accent); border-color: var(--accent); }
+.install-note { font-size: .88rem; color: var(--muted); max-width: 720px; }
+.install-note strong { color: var(--text); }
+
+/* ---------- Sponsor / CTA ---------- */
+aside.cta {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 16px; flex-wrap: wrap;
+  background: var(--accent-soft); border: 1px solid var(--border);
+  border-radius: 14px; padding: 18px 22px; margin: 26px 0 0; max-width: 720px;
+}
+aside.cta p { margin: 0; color: var(--text); }
+.cta-buttons { display: flex; gap: 10px; flex-wrap: wrap; }
+.cta-button {
+  display: inline-block; background: var(--accent); color: var(--bg);
+  font-weight: 650; font-size: 14px; padding: 9px 16px; border-radius: 9px;
+}
+.cta-button:hover { background: var(--accent-strong); color: var(--bg); text-decoration: none; }
+.cta-button.ghost { background: transparent; border: 1px solid var(--border); color: var(--text); }
+.cta-button.ghost:hover { border-color: var(--accent); color: var(--accent); }
+
+/* ---------- Feature grid ---------- */
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(248px, 1fr)); gap: 14px; margin-top: 24px; }
+.card {
+  background: var(--bg-elev); border: 1px solid var(--border);
+  border-radius: 12px; padding: 18px 18px 16px;
+}
+.card .ic {
+  width: 34px; height: 34px; border-radius: 9px; background: var(--accent-soft);
+  color: var(--accent); display: grid; place-items: center; margin-bottom: 12px;
+}
+.card .ic svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.card p { margin: 0; font-size: .9rem; color: var(--muted); }
+
+/* ---------- Format pills ---------- */
+.pills { display: flex; flex-wrap: wrap; gap: 8px; margin: 22px 0 8px; }
+.pill {
+  background: var(--bg-elev); border: 1px solid var(--border);
+  border-radius: 999px; padding: 5px 13px; font-size: 13px; font-weight: 600;
+  color: var(--text-strong);
+}
+
+/* ---------- Metric bars ---------- */
+.proof {
+  background: var(--bg-elev); border: 1px solid var(--border);
+  border-radius: 14px; padding: 24px; margin-top: 24px;
+}
+.proof-title { font-size: .82rem; color: var(--muted); letter-spacing: .04em; text-transform: uppercase; margin-bottom: 20px; }
+.proof-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 28px; }
+.stat-label { font-size: .8rem; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 4px; }
+.stat-big { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.stat-big strong { font-size: 1.9rem; color: var(--text-strong); letter-spacing: -.03em; }
+.stat-big span { font-size: .82rem; color: var(--green); font-weight: 600; }
+.bar { height: 8px; background: var(--bg-inset); border-radius: 999px; overflow: hidden; margin-top: 12px; }
+.bar > i { display: block; height: 100%; border-radius: 999px; background: var(--accent); }
+.bar > i.green { background: var(--green); }
+
+/* ---------- Reading list ---------- */
+ul.changes { list-style: none; padding: 0; margin: 24px 0 0; }
+ul.changes li {
+  position: relative; padding: 0 0 0 26px; margin-bottom: 14px; color: var(--muted);
+}
+ul.changes li::before {
+  content: ""; position: absolute; left: 4px; top: .62em;
+  width: 8px; height: 8px; border-radius: 2px; background: var(--leaf); transform: rotate(45deg);
+}
+ul.changes strong { color: var(--text-strong); }
+
+/* ---------- Terminal / shortcuts ---------- */
+.term {
+  background: var(--code-bg); border: 1px solid var(--border);
+  border-radius: 12px; padding: 18px 20px; overflow-x: auto;
+  font-size: 13px; line-height: 1.9; color: var(--text);
+  margin: 22px 0 0;
+}
+.term .k { display: inline-block; min-width: 132px; color: var(--accent); font-weight: 600; }
+.keys { display: grid; grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); gap: 0 28px; }
+
+/* ---------- Table ---------- */
+.table-wrap { overflow-x: auto; margin-top: 22px; border: 1px solid var(--border); border-radius: 12px; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { text-align: left; padding: 11px 16px; border-bottom: 1px solid var(--border); }
+th { color: var(--text-strong); font-weight: 650; background: var(--bg-elev); }
+tr:last-child td { border-bottom: 0; }
+td:first-child { color: var(--text-strong); font-weight: 600; }
+
+/* ---------- Footer ---------- */
+footer {
+  max-width: 940px; margin: 70px auto 0; padding: 28px 20px 46px;
+  border-top: 1px solid var(--border); color: var(--muted); font-size: .85rem;
+}
+footer p { margin: 0 0 8px; }
+
+@media (max-width: 640px) {
+  .hide-sm { display: none; }
+  .bar-inner { gap: 12px; }
+  aside.cta { flex-direction: column; align-items: flex-start; }
+  .proof { padding: 18px; }
+}
+</style>
+</head>
+<body>
+<header class="bar">
+  <div class="bar-inner">
+    <a class="bar-name" href="#top"><img src="./assets/icon.png" alt=""><span>SV-stark/</span>eParna</a>
+    <nav class="bar-links" aria-label="Main navigation">
+      <a class="hide-sm" href="#features">Features</a>
+      <a class="hide-sm" href="#formats">Formats</a>
+      <a class="hide-sm" href="#install">Install</a>
+      <a href="https://github.com/SV-stark/eParna">Source</a>
+      <a class="star-link" href="https://github.com/SV-stark/eParna/releases">Releases</a>
+    </nav>
+    <label class="theme">
+      <select class="theme-select" id="theme" aria-label="Theme">
+        <option value="midnight">Midnight</option>
+        <option value="dusk">Dusk</option>
+        <option value="paper">Paper</option>
+      </select>
+      <span class="chev" aria-hidden="true"></span>
+    </label>
+  </div>
+</header>
+
+<main id="top">
+  <div class="hero">
+    <p class="hero-label">A lightweight ebook reader · written in pure Rust</p>
+    <h1>One quiet place for <em>every</em> book you own.</h1>
+    <p class="lead">
+      <strong>eParna</strong> is a fast, lightweight, cross-platform ebook reader. The name comes
+      from Sanskrit <em>पर्ण (parṇa)</em> — <em>leaf</em>. A page is a leaf, so eParna is an
+      “e-leaf”: a light, quiet place to read. Built on <code>ebook-rs</code> for multi-format
+      parsing and <code>gpui-kit</code> for a GPU-accelerated, native-feeling UI.
+    </p>
+
+    <div class="install" id="install">
+      <div class="tabs" role="tablist" aria-label="Platform">
+        <button class="tab" role="tab" id="tab-unix" aria-controls="cmd-unix" aria-selected="true" tabindex="0">macOS &amp; Linux</button>
+        <button class="tab" role="tab" id="tab-win" aria-controls="cmd-win" aria-selected="false" tabindex="-1">Windows</button>
+        <button class="tab" role="tab" id="tab-src" aria-controls="cmd-src" aria-selected="false" tabindex="-1">From source</button>
+      </div>
+      <div class="cmd" role="tabpanel" id="cmd-unix" aria-labelledby="tab-unix">
+        <pre><span class="prompt">$ </span><code>curl -fsSL https://github.com/SV-stark/eParna/releases/latest/download/eparna-installer.sh | sh</code></pre>
+        <button class="btn" type="button" aria-label="Copy command" title="Copy command">⧉</button>
+      </div>
+      <div class="cmd" role="tabpanel" id="cmd-win" aria-labelledby="tab-win" hidden>
+        <pre><span class="prompt">&gt; </span><code>irm https://github.com/SV-stark/eParna/releases/latest/download/eparna-installer.ps1 | iex</code></pre>
+        <button class="btn" type="button" aria-label="Copy command" title="Copy command">⧉</button>
+      </div>
+      <div class="cmd" role="tabpanel" id="cmd-src" aria-labelledby="tab-src" hidden>
+        <pre><span class="prompt">$ </span><code>git clone https://github.com/SV-stark/eParna &amp;&amp; cd eParna &amp;&amp; cargo build --release</code></pre>
+        <button class="btn" type="button" aria-label="Copy command" title="Copy command">⧉</button>
+      </div>
+    </div>
+    <p class="sr-only" role="status" id="copy-status"></p>
+    <p class="install-note">
+      Prebuilt installers are attached to every <a href="https://github.com/SV-stark/eParna/releases">GitHub Release</a>:
+      an MSI and portable ZIP for Windows, PKG installers for macOS (Apple Silicon &amp; Intel), a single-file
+      AppImage for Linux, and a <code>.tar.xz</code> for minimal systems. Every artifact ships with a
+      <code>.sha256</code> sidecar, so downloads can be verified.
+    </p>
+    <p class="install-note">
+      Requires Rust 1.90+ to build from source (edition 2024). The release binary at
+      <code>target/release/eparna</code> uses LTO and <code>opt-level 3</code> for a fast start.
+    </p>
+
+    <aside class="cta">
+      <p>Reading should be simple. Give it a try.</p>
+      <div class="cta-buttons">
+        <a class="cta-button" href="https://github.com/SV-stark/eParna/releases">Download eParna</a>
+        <a class="cta-button ghost" href="https://github.com/SV-stark/eParna">★ Star on GitHub</a>
+      </div>
+    </aside>
+  </div>
+
+  <section id="features">
+    <h2>Everything you need to actually read</h2>
+    <p class="section-desc">A focused reader that stays out of the way — with the details that make long sessions comfortable.</p>
+    <div class="grid">
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg></div><h3>Library view</h3><p>A cover-forward grid with “Continue reading”, filtering, sorting, favourites and one-click reopen.</p></div>
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24"><path d="M9 11l3 3L22 4M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></div><h3>Highlights &amp; notes</h3><p>Select, copy and save passages. Click any note to jump back to it, or export everything as Markdown.</p></div>
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg></div><h3>Full-text search</h3><p>Find anything in a book with snippets, jump-to-result, regex mode and a configurable result cap.</p></div>
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24"><path d="M4 4h16v16H4zM9 4v16M15 4v16"/></svg></div><h3>TOC &amp; bookmarks</h3><p>Jump to any chapter through a hierarchical table of contents with deep search and breadcrumbs.</p></div>
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24"><path d="M12 3v18M3 12h18M5 5l14 14M19 5 5 19"/></svg></div><h3>Typography panel</h3><p>Labelled steppers for font size, line height, margin and text width, plus typeface, theme and one/two-page toggles.</p></div>
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24"><path d="M20 15a4 4 0 0 0-4-4H6a4 4 0 0 0 0 8h10a4 4 0 0 0 4-4zM6 7h12"/></svg></div><h3>Offline dictionaries</h3><p>Look up words with StarDict dictionaries, or search Wikipedia — without leaving the book.</p></div>
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24"><path d="M12 2 2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg></div><h3>Every format</h3><p>EPUB, MOBI, AZW3, KFX, PDF, FB2, CBZ, DOCX and more — detected automatically from file contents.</p></div>
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div><h3>Private by default</h3><p>Reading is fully offline. Recent books, notes and settings stay on your device — nothing is uploaded.</p></div>
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M8 4v16"/></svg></div><h3>OPDS catalogues</h3><p>Browse and download books from OPDS feeds, then open them straight into the reader.</p></div>
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></div><h3>Footnotes &amp; lightbox</h3><p>Inline footnote popups, cross-document links and a full-size image lightbox keep the book intact.</p></div>
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24"><path d="M12 8v4l3 3M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z"/></svg></div><h3>Reliable resume</h3><p>Position is stored as a Readium CFI, returning you to the same passage even after re-conversion.</p></div>
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24"><path d="M5 3v18l9-9-9-9zM14 3v18"/></svg></div><h3>Save as EPUB</h3><p>Convert any supported format into a clean EPUB 3 file, with structural validation included.</p></div>
+    </div>
+  </section>
+
+  <section id="formats">
+    <h2>Your whole library, every format</h2>
+    <p class="section-desc">eParna sniffs the file contents, so you don't have to sort by extension. Open a book and it just works.</p>
+    <div class="pills">
+      <span class="pill">EPUB 2 / 3</span><span class="pill">KEPUB</span><span class="pill">KFX</span>
+      <span class="pill">MOBI</span><span class="pill">AZW3</span><span class="pill">FB2</span>
+      <span class="pill">LIT</span><span class="pill">CBZ</span><span class="pill">PDF</span>
+      <span class="pill">ODT</span><span class="pill">DOCX</span><span class="pill">RTF</span>
+      <span class="pill">TXT</span><span class="pill">Markdown</span>
+    </div>
+
+    <div class="proof">
+      <p class="proof-title">At a glance</p>
+      <div class="proof-grid">
+        <div>
+          <p class="stat-label">Formats supported</p>
+          <p class="stat-big"><strong>14+</strong><span>auto-detected</span></p>
+          <div class="bar"><i class="green" style="width:92%"></i></div>
+        </div>
+        <div>
+          <p class="stat-label">Foliate feature parity</p>
+          <p class="stat-big"><strong>~80%</strong><span>and growing</span></p>
+          <div class="bar"><i style="width:80%"></i></div>
+        </div>
+        <div>
+          <p class="stat-label">Network calls while reading</p>
+          <p class="stat-big"><strong>0</strong><span>fully offline</span></p>
+          <div class="bar"><i class="green" style="width:4%"></i></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="reading">
+    <h2>Made for long reading sessions</h2>
+    <p class="section-desc">The little things add up. Everything here is in the default view or one click away.</p>
+    <ul class="changes">
+      <li><strong>Themes that feel like paper.</strong> Light, Dark, Sepia and a fully custom background/foreground theme.</li>
+      <li><strong>Reading statistics.</strong> Section word count and session reading time live in the status line.</li>
+      <li><strong>Nested TOC &amp; print pages.</strong> Hierarchy is preserved, and the print page is shown when the book has a page list.</li>
+      <li><strong>Inlined assets.</strong> Images are embedded by <code>ebook-rs</code>, so sections render offline.</li>
+      <li><strong>Deduplication.</strong> Opening the same book from another path updates the existing entry via a content hash.</li>
+      <li><strong>Multiple windows &amp; fullscreen.</strong> Open a second reader window or go distraction-free with <code>F11</code>.</li>
+      <li><strong>LCP passphrase &amp; DRM.</strong> Protected books can be opened by entering a passphrase.</li>
+    </ul>
+
+    <pre class="term"><span class="prompt"># keyboard shortcuts</span>
+<div class="keys"><div>
+<span class="k">Ctrl+O</span> Open a book
+<span class="k">Ctrl+F</span> Focus in-book search
+<span class="k">Ctrl+B</span> Toggle bookmark
+<span class="k">Ctrl+C</span> Copy selected text
+<span class="k">Ctrl+L</span> Back to the library
+</div><div>
+<span class="k">→ / Space</span> Next section
+<span class="k">←</span> Previous section
+<span class="k">Home / End</span> First / last section
+<span class="k">F11</span> Toggle fullscreen
+<span class="k">+ / −</span> Font size
+</div></div></pre>
+  </section>
+
+  <section id="privacy">
+    <h2>Offline by default, private by design</h2>
+    <p class="section-desc">eParna only reaches the network when you explicitly ask it to.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Action</th><th>Network?</th><th>Detail</th></tr></thead>
+        <tbody>
+          <tr><td>Reading a book</td><td>Never</td><td>Parsed in-process; assets are inlined for offline rendering.</td></tr>
+          <tr><td>Dictionary / Wikipedia</td><td>On demand</td><td>Queries <code>dictionaryapi.dev</code> or <code>en.wikipedia.org</code> only when you look something up.</td></tr>
+          <tr><td>OPDS catalogues</td><td>On demand</td><td>Fetches only the catalog URL you enter and books you open from it.</td></tr>
+          <tr><td>Reading state</td><td>Stored locally</td><td>Recent books, bookmarks, notes and settings live in your OS config directory.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="tech">
+    <h2>Built on solid foundations</h2>
+    <p class="section-desc">A small, auditable dependency graph, checked by CI on every push.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Crate</th><th>Purpose</th></tr></thead>
+        <tbody>
+          <tr><td>ebook-rs</td><td>Multi-format parsing, search, TOC, covers, validation, EPUB/KFX export</td></tr>
+          <tr><td>gpui-kit</td><td>GPU-accelerated native UI (powered by gpui-fast)</td></tr>
+          <tr><td>rfd</td><td>Native file dialogs</td></tr>
+          <tr><td>serde / serde_json</td><td>State and annotation serialization</td></tr>
+          <tr><td>ureq</td><td>OPDS catalogues and online lookups</td></tr>
+          <tr><td>base64</td><td>Cover thumbnails</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="section-desc" style="margin-top:18px">Released under the <a href="https://github.com/SV-stark/eParna/blob/main/LICENSE">MIT License</a>. RustSec advisories, licence policy and crates.io-only sourcing are enforced by <code>cargo-deny</code> in CI.</p>
+  </section>
+</main>
+
+<footer>
+  <p>eParna — an “e-leaf” for every book. Made with Rust, <code>ebook-rs</code> and <code>gpui-kit</code>.</p>
+  <p><a href="https://github.com/SV-stark/eParna">Source</a> · <a href="https://github.com/SV-stark/eParna/releases">Releases</a> · <a href="https://github.com/SV-stark/eParna/blob/main/CHANGELOG.md">Changelog</a> · <a href="https://github.com/SV-stark/eParna/issues">Issues</a></p>
+</footer>
+
+<script>
+  // Theme selector
+  const themeSel = document.getElementById('theme');
+  const root = document.documentElement;
+  themeSel.value = root.dataset.theme || 'midnight';
+  themeSel.addEventListener('change', () => {
+    root.classList.add('no-transition');
+    root.dataset.theme = themeSel.value;
+    try { localStorage.setItem('eparna-theme', themeSel.value); } catch {}
+    requestAnimationFrame(() => requestAnimationFrame(() => root.classList.remove('no-transition')));
+  });
+
+  // Install platform tabs
+  const tabs = Array.from(document.querySelectorAll('.tab'));
+  function selectTab(active) {
+    tabs.forEach(t => {
+      const on = t === active;
+      t.setAttribute('aria-selected', String(on));
+      t.tabIndex = on ? 0 : -1;
+      document.getElementById(t.getAttribute('aria-controls')).hidden = !on;
+    });
+    active.focus();
+  }
+  tabs.forEach((t, i) => {
+    t.addEventListener('click', () => selectTab(t));
+    t.addEventListener('keydown', e => {
+      if (e.key === 'ArrowRight') selectTab(tabs[(i + 1) % tabs.length]);
+      if (e.key === 'ArrowLeft') selectTab(tabs[(i - 1 + tabs.length) % tabs.length]);
+    });
+  });
+
+  // Copy buttons
+  const status = document.getElementById('copy-status');
+  document.querySelectorAll('.btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const cmd = btn.parentElement.querySelector('code').textContent;
+      let ok = true;
+      try { await navigator.clipboard.writeText(cmd); } catch { ok = false; }
+      btn.textContent = ok ? '✓' : '!';
+      if (status) status.textContent = ok ? 'Copied' : 'Copy failed — select the command manually.';
+      setTimeout(() => { btn.textContent = '⧉'; if (status) status.textContent = ''; }, 1600);
+    });
+  });
+</script>
+</body>
+</html>
