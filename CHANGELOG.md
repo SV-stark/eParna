@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-11-16
+
+### Added
+- **Windows Executable Icon Embedding**: Added `build.rs` and `assets/eparna.rc` (using `embed-resource`) to embed `assets/icon.ico` directly into `eparna.exe` for Explorer, Task Manager, Start Menu, and "Open with" dialogs.
+- **Windows Start Menu & "Open with" Registration**: Updated `wix/main.wxs` to create a Start Menu shortcut (`eParna`), set `ARPURLINFOABOUT`/`ARPCOMMENTS` metadata, and register `App Paths`, `Applications\eparna.exe`, `Capabilities` (`RegisteredApplications`), and `OpenWithProgids` for all supported formats (`.epub`, `.mobi`, `.azw3`, `.fb2`, `.pdf`, `.txt`, `.md`, `.docx`, `.odt`, `.rtf`, `.cbz`, `.lit`, `.kfx`, `.kepub`).
+
+### Fixed
+- **Hierarchical TOC Sub-Items Parsing & Display**: Replaced section-index deduplication in TOC loading with `TocItem` and `build_toc_items` (`src/models.rs`), preserving nested sub-items that target `#fragment` anchors within the same chapter; updated `href_to_index` to resolve `full_path` and reject empty paths; indented sub-items by depth in the Contents sidebar (`src/main.rs`) and highlighted only the active TOC entry.
+
 ## [0.8.1] - 2026-11-16
 
 ### Added

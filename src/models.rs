@@ -228,6 +228,61 @@ pub struct Modal {
     pub image: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TocItem {
+    pub label: String,
+    pub depth: usize,
+    pub section_index: usize,
+    pub fragment: Option<String>,
+}
+
+impl TocItem {
+    pub fn select_label(&self) -> String {
+        format!("{}{}", "  ".repeat(self.depth.min(6)), self.label)
+    }
+}
+
+pub fn href_to_index(book: &ebook_rs::Book, href: &str) -> Option<usize> {
+    let path = href.split('#').next().unwrap_or(href).trim();
+    if path.is_empty() {
+        return None;
+    }
+    book.sections().iter().position(|s| {
+        s.full_path == path
+            || s.href == path
+            || s.full_path.ends_with(path)
+            || (!s.href.is_empty() && path.ends_with(&s.href))
+    })
+}
+
+pub fn build_toc_items(book: &ebook_rs::Book) -> Vec<TocItem> {
+    let mut items = Vec::new();
+    for flat in book.flatten_toc() {
+        let Some(section_index) = href_to_index(book, &flat.full_path)
+            .or_else(|| href_to_index(book, &flat.href))
+        else {
+            continue;
+        };
+        let label = flat.label.trim().to_string();
+        if label.is_empty() {
+            continue;
+        }
+        let fragment = flat
+            .href
+            .split_once('#')
+            .or_else(|| flat.full_path.split_once('#'))
+            .map(|(_, f)| f.trim().to_string())
+            .filter(|f| !f.is_empty());
+        items.push(TocItem {
+            label,
+            depth: flat.depth,
+            section_index,
+            fragment,
+        });
+    }
+    items
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -267,5 +322,26 @@ mod tests {
         assert_eq!(state.library_view_mode, "grid");
         assert_eq!(state.recent.len(), 1);
         assert_eq!(state.recent[0].status, "reading");
+    }
+
+    #[test]
+    fn test_href_to_index_handles_fragments_and_empty_paths() {
+        let epub = ebook_rs::sample_builder::generate_sample_epub().expect("sample epub");
+        let book = ebook_rs::Book::from_bytes(&epub).expect("parse sample epub");
+        assert_eq!(href_to_index(&book, ""), None);
+        assert_eq!(href_to_index(&book, "#only-fragment"), None);
+        assert_eq!(href_to_index(&book, "ch1.xhtml"), Some(0));
+        assert_eq!(href_to_index(&book, "ch1.xhtml#sub1"), Some(0));
+        assert_eq!(href_to_index(&book, "OEBPS/ch2.xhtml#sec"), Some(1));
+    }
+
+    #[test]
+    fn test_build_toc_items_preserves_subitems_and_depths() {
+        let epub = ebook_rs::sample_builder::generate_sample_epub().expect("sample epub");
+        let book = ebook_rs::Book::from_bytes(&epub).expect("parse sample epub");
+        let items = build_toc_items(&book);
+        assert!(!items.is_empty());
+        assert_eq!(items[0].depth, 0);
+        assert_eq!(items[0].section_index, 0);
     }
 }

@@ -60,7 +60,7 @@
 
     <Product
         Id='*'
-        Name='eparna'
+        Name='eParna'
         UpgradeCode='DC78F76D-E50A-419E-BF2A-01C67A6F0027'
         Manufacturer='SV-stark'
         Language='1033'
@@ -131,7 +131,98 @@
                     </Directory>
                 </Directory>
             </Directory>
+
+            <Directory Id='ProgramMenuFolder'>
+                <Directory Id='ApplicationProgramsFolder' Name='eParna'/>
+            </Directory>
         </Directory>
+
+        <DirectoryRef Id='ApplicationProgramsFolder'>
+            <Component Id='ApplicationShortcut' Guid='A7E4B8C1-3F2D-4A9E-8B1C-5D6E7F8A9B0C'>
+                <Shortcut
+                    Id='ApplicationStartMenuShortcut'
+                    Name='eParna'
+                    Description='A fast, lightweight, cross-platform ebook reader'
+                    Target='[Bin]eparna.exe'
+                    WorkingDirectory='Bin'
+                    Icon='ProductICO'/>
+                <RemoveFolder Id='CleanUpShortCut' Directory='ApplicationProgramsFolder' On='uninstall'/>
+                <RegistryValue
+                    Root='HKCU'
+                    Key='Software\SV-stark\eparna'
+                    Name='installed'
+                    Type='integer'
+                    Value='1'
+                    KeyPath='yes'/>
+            </Component>
+        </DirectoryRef>
+
+        <DirectoryRef Id='TARGETDIR'>
+            <Component Id='FileAssociations' Guid='B8F5C9D2-4E3A-4B0F-9C2D-6E7F8A9B0C1D'>
+                <!-- App Paths -->
+                <RegistryValue Root='HKLM' Key='Software\Microsoft\Windows\CurrentVersion\App Paths\eparna.exe' Type='string' Value='[Bin]eparna.exe'/>
+                <RegistryValue Root='HKLM' Key='Software\Microsoft\Windows\CurrentVersion\App Paths\eparna.exe' Name='Path' Type='string' Value='[Bin]'/>
+
+                <!-- ProgID for eParna -->
+                <RegistryValue Root='HKLM' Key='Software\Classes\eParna.Document' Type='string' Value='eParna Ebook Document'/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\eParna.Document\DefaultIcon' Type='string' Value='[Bin]eparna.exe,0'/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\eParna.Document\shell\open\command' Type='string' Value='"[Bin]eparna.exe" "%1"'/>
+
+                <!-- Applications registration for Open With -->
+                <RegistryValue Root='HKLM' Key='Software\Classes\Applications\eparna.exe' Name='FriendlyAppName' Type='string' Value='eParna'/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\Applications\eparna.exe\DefaultIcon' Type='string' Value='[Bin]eparna.exe,0'/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\Applications\eparna.exe\shell\open\command' Type='string' Value='"[Bin]eparna.exe" "%1"'/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\Applications\eparna.exe\SupportedTypes' Name='.epub' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\Applications\eparna.exe\SupportedTypes' Name='.mobi' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\Applications\eparna.exe\SupportedTypes' Name='.azw3' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\Applications\eparna.exe\SupportedTypes' Name='.fb2' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\Applications\eparna.exe\SupportedTypes' Name='.pdf' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\Applications\eparna.exe\SupportedTypes' Name='.txt' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\Applications\eparna.exe\SupportedTypes' Name='.md' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\Applications\eparna.exe\SupportedTypes' Name='.docx' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\Applications\eparna.exe\SupportedTypes' Name='.odt' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\Applications\eparna.exe\SupportedTypes' Name='.rtf' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\Applications\eparna.exe\SupportedTypes' Name='.cbz' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\Applications\eparna.exe\SupportedTypes' Name='.lit' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\Applications\eparna.exe\SupportedTypes' Name='.kfx' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\Applications\eparna.exe\SupportedTypes' Name='.kepub' Type='string' Value=''/>
+
+                <!-- Default Apps Capabilities registration -->
+                <RegistryValue Root='HKLM' Key='Software\RegisteredApplications' Name='eParna' Type='string' Value='Software\SV-stark\eparna\Capabilities' KeyPath='yes'/>
+                <RegistryValue Root='HKLM' Key='Software\SV-stark\eparna\Capabilities' Name='ApplicationName' Type='string' Value='eParna'/>
+                <RegistryValue Root='HKLM' Key='Software\SV-stark\eparna\Capabilities' Name='ApplicationDescription' Type='string' Value='A fast, lightweight, cross-platform ebook reader'/>
+                <RegistryValue Root='HKLM' Key='Software\SV-stark\eparna\Capabilities\FileAssociations' Name='.epub' Type='string' Value='eParna.Document'/>
+                <RegistryValue Root='HKLM' Key='Software\SV-stark\eparna\Capabilities\FileAssociations' Name='.mobi' Type='string' Value='eParna.Document'/>
+                <RegistryValue Root='HKLM' Key='Software\SV-stark\eparna\Capabilities\FileAssociations' Name='.azw3' Type='string' Value='eParna.Document'/>
+                <RegistryValue Root='HKLM' Key='Software\SV-stark\eparna\Capabilities\FileAssociations' Name='.fb2' Type='string' Value='eParna.Document'/>
+                <RegistryValue Root='HKLM' Key='Software\SV-stark\eparna\Capabilities\FileAssociations' Name='.pdf' Type='string' Value='eParna.Document'/>
+                <RegistryValue Root='HKLM' Key='Software\SV-stark\eparna\Capabilities\FileAssociations' Name='.txt' Type='string' Value='eParna.Document'/>
+                <RegistryValue Root='HKLM' Key='Software\SV-stark\eparna\Capabilities\FileAssociations' Name='.md' Type='string' Value='eParna.Document'/>
+                <RegistryValue Root='HKLM' Key='Software\SV-stark\eparna\Capabilities\FileAssociations' Name='.docx' Type='string' Value='eParna.Document'/>
+                <RegistryValue Root='HKLM' Key='Software\SV-stark\eparna\Capabilities\FileAssociations' Name='.odt' Type='string' Value='eParna.Document'/>
+                <RegistryValue Root='HKLM' Key='Software\SV-stark\eparna\Capabilities\FileAssociations' Name='.rtf' Type='string' Value='eParna.Document'/>
+                <RegistryValue Root='HKLM' Key='Software\SV-stark\eparna\Capabilities\FileAssociations' Name='.cbz' Type='string' Value='eParna.Document'/>
+                <RegistryValue Root='HKLM' Key='Software\SV-stark\eparna\Capabilities\FileAssociations' Name='.lit' Type='string' Value='eParna.Document'/>
+                <RegistryValue Root='HKLM' Key='Software\SV-stark\eparna\Capabilities\FileAssociations' Name='.kfx' Type='string' Value='eParna.Document'/>
+                <RegistryValue Root='HKLM' Key='Software\SV-stark\eparna\Capabilities\FileAssociations' Name='.kepub' Type='string' Value='eParna.Document'/>
+
+                <!-- OpenWithProgids (adds eParna to Open With without hijacking existing defaults) -->
+                <RegistryValue Root='HKLM' Key='Software\Classes\.epub\OpenWithProgids' Name='eParna.Document' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\.mobi\OpenWithProgids' Name='eParna.Document' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\.azw3\OpenWithProgids' Name='eParna.Document' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\.fb2\OpenWithProgids' Name='eParna.Document' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\.pdf\OpenWithProgids' Name='eParna.Document' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\.txt\OpenWithProgids' Name='eParna.Document' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\.md\OpenWithProgids' Name='eParna.Document' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\.docx\OpenWithProgids' Name='eParna.Document' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\.odt\OpenWithProgids' Name='eParna.Document' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\.rtf\OpenWithProgids' Name='eParna.Document' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\.cbz\OpenWithProgids' Name='eParna.Document' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\.lit\OpenWithProgids' Name='eParna.Document' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\.kfx\OpenWithProgids' Name='eParna.Document' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\.kepub\OpenWithProgids' Name='eParna.Document' Type='string' Value=''/>
+            </Component>
+        </DirectoryRef>
 
         <Feature
             Id='Binaries'
@@ -150,6 +241,8 @@
             <!--<ComponentRef Id='License'/>-->
 
             <ComponentRef Id='binary0'/>
+            <ComponentRef Id='ApplicationShortcut'/>
+            <ComponentRef Id='FileAssociations'/>
 
             <Feature
                 Id='Environment'
@@ -174,6 +267,8 @@
         <Property Id='ARPPRODUCTICON' Value='ProductICO' />
 
         <Property Id='ARPHELPLINK' Value='https://github.com/SV-stark/eParna'/>
+        <Property Id='ARPURLINFOABOUT' Value='https://github.com/SV-stark/eParna'/>
+        <Property Id='ARPCOMMENTS' Value='A fast, lightweight, cross-platform ebook reader'/>
         
         <UI>
             <UIRef Id='WixUI_FeatureTree'/>

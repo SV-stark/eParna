@@ -35,13 +35,6 @@ use crate::network::*;
 use crate::stardict::StarDict;
 use crate::ui_helpers::*;
 
-fn href_to_index(book: &ebook_rs::Book, href: &str) -> Option<usize> {
-    let href = href.split('#').next().unwrap_or(href);
-    book.sections()
-        .iter()
-        .position(|s| s.href == href || s.full_path.ends_with(href) || href.ends_with(&s.href))
-}
-
 fn notify_simple(window: &mut Window, cx: &mut Context<ReaderView>, title: &str, message: String) {
     use gpui_kit::component::WindowExt;
     window.push_notification(
@@ -61,8 +54,9 @@ struct ReaderView {
     current: usize,
     html: String,
 
-    toc_items: Vec<(String, usize)>,
+    toc_items: Vec<TocItem>,
     toc_state: Option<Entity<SelectState<Vec<String>>>>,
+    active_toc_index: Option<usize>,
 
     sidebar_mode: SidebarMode,
     search_input: Entity<InputState>,
@@ -256,6 +250,7 @@ impl ReaderView {
             html: String::new(),
             toc_items: Vec::new(),
             toc_state: None,
+            active_toc_index: None,
             sidebar_mode: SidebarMode::Contents,
             search_input,
             goto_input,
@@ -416,24 +411,21 @@ impl ReaderView {
                     String::new()
                 };
 
-                let mut items: Vec<(String, usize)> = Vec::new();
-                for flat in book.flatten_toc() {
-                    if let Some(i) = href_to_index(&book, &flat.href)
-                        && !items.iter().any(|(_, j)| *j == i)
-                    {
-                        let label = format!("{}{}", "  ".repeat(flat.depth), flat.label);
-                        items.push((label, i));
-                    }
-                }
-                let labels: Vec<String> = items.iter().map(|(l, _)| l.clone()).collect();
+                let items = build_toc_items(&book);
+                let labels: Vec<String> = items.iter().map(TocItem::select_label).collect();
                 let toc_state = cx.new(|cx| SelectState::new(labels, None, window, cx));
                 let toc_sub =
                     cx.subscribe(&toc_state, |view, _state, event: &SelectEvent<_>, cx| {
                         if let SelectEvent::Confirm(Some(label)) = event
-                            && let Some((_, idx)) = view.toc_items.iter().find(|(l, _)| l == label)
+                            && let Some((toc_idx, item)) = view
+                                .toc_items
+                                .iter()
+                                .enumerate()
+                                .find(|(_, item)| item.select_label() == *label)
                         {
-                            view.current = *idx;
-                            view.load_current(cx);
+                            let section_idx = item.section_index;
+                            view.jump(section_idx, cx);
+                            view.active_toc_index = Some(toc_idx);
                             cx.notify();
                         }
                     });
@@ -520,6 +512,7 @@ impl ReaderView {
 
                 self.toc_items = items;
                 self.toc_state = Some(toc_state);
+                self.active_toc_index = None;
                 self.book = Some(book);
                 self.book_path = Some(path);
                 self.reading_start = std::time::Instant::now();
@@ -654,6 +647,7 @@ impl ReaderView {
             && self.current + 1 < book.sections().len()
         {
             self.current += 1;
+            self.active_toc_index = None;
             self.load_current(cx);
             cx.notify();
         }
@@ -662,6 +656,7 @@ impl ReaderView {
     fn prev_section(&mut self, cx: &mut Context<Self>) {
         if self.current > 0 {
             self.current -= 1;
+            self.active_toc_index = None;
             self.load_current(cx);
             cx.notify();
         }
@@ -678,6 +673,7 @@ impl ReaderView {
                 }
             }
             self.current = idx;
+            self.active_toc_index = None;
             self.load_current(cx);
             cx.notify();
         }
@@ -689,6 +685,7 @@ impl ReaderView {
             && prev < book.sections().len()
         {
             self.current = prev;
+            self.active_toc_index = None;
             self.load_current(cx);
             cx.notify();
         }
@@ -2115,7 +2112,8 @@ impl Render for ReaderView {
                             .search_toc(&q)
                             .into_iter()
                             .filter_map(|m| {
-                                let idx = href_to_index(book, &m.href)?;
+                                let idx = href_to_index(book, &m.full_path)
+                                    .or_else(|| href_to_index(book, &m.href))?;
                                 Some((m.label, m.breadcrumb, idx))
                             })
                             .collect();
@@ -2163,21 +2161,45 @@ impl Render for ReaderView {
                             .text_color(palette.muted)
                             .child("Chapters:"),
                     );
+                    let active_toc_i = self
+                        .active_toc_index
+                        .filter(|&ai| {
+                            self.toc_items
+                                .get(ai)
+                                .map(|t| t.section_index)
+                                == Some(self.current)
+                        })
+                        .or_else(|| {
+                            self.toc_items
+                                .iter()
+                                .position(|item| item.section_index == self.current)
+                        });
                     let mut chapter_list = v_flex().gap_1();
-                    for (i, (label, idx)) in self.toc_items.iter().enumerate() {
-                        let idx = *idx;
-                        let is_active = idx == self.current;
-                        let btn =
-                            Button::new(format!("toc_ch_{i}")).label(truncate(label.trim(), 32));
+                    for (i, item) in self.toc_items.iter().enumerate() {
+                        let idx = item.section_index;
+                        let is_active = active_toc_i == Some(i);
+                        let indent = (item.depth.min(4) as f32) * 14.0;
+                        let max_chars = 32usize.saturating_sub(item.depth.min(4) * 2).max(16);
+                        let display_label = if item.depth > 0 {
+                            format!("· {}", truncate(&item.label, max_chars))
+                        } else {
+                            truncate(&item.label, max_chars)
+                        };
+                        let btn = Button::new(format!("toc_ch_{i}")).label(display_label);
                         let btn = if is_active {
                             btn.outline()
                         } else {
                             btn.ghost()
                         };
-                        chapter_list =
-                            chapter_list.child(btn.on_click(cx.listener(move |view, _, _, cx| {
-                                view.jump(idx, cx);
-                            })));
+                        chapter_list = chapter_list.child(
+                            div().pl(px(indent)).child(btn.on_click(cx.listener(
+                                move |view, _, _, cx| {
+                                    view.jump(idx, cx);
+                                    view.active_toc_index = Some(i);
+                                    cx.notify();
+                                },
+                            ))),
+                        );
                     }
                     v = v.child(chapter_list);
                 }
@@ -2210,10 +2232,10 @@ impl Render for ReaderView {
                     for &sec in &self.bookmarks {
                         let sec_idx = sec;
                         let is_current = sec_idx == self.current;
-                        let label = if let Some((l, _)) =
-                            self.toc_items.iter().find(|(_, i)| *i == sec_idx)
+                        let label = if let Some(item) =
+                            self.toc_items.iter().find(|item| item.section_index == sec_idx)
                         {
-                            format!("Sec {}: {}", sec_idx + 1, truncate(l.trim(), 22))
+                            format!("Sec {}: {}", sec_idx + 1, truncate(item.label.trim(), 22))
                         } else {
                             format!("Section {}", sec_idx + 1)
                         };
