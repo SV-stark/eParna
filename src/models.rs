@@ -227,3 +227,45 @@ pub struct Modal {
     /// image lightbox. When set, `body` is ignored.
     pub image: Option<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_annotation_legacy_highlight_detection() {
+        let legacy_hl = Annotation {
+            section: 1,
+            note: String::new(),
+            quote: "To be or not to be".into(),
+            kind: String::new(),
+            created: "0".into(),
+            color: "yellow".into(),
+        };
+        assert!(legacy_hl.is_highlight());
+        assert!(legacy_hl.summary().contains("[Y]"));
+
+        let legacy_note = Annotation {
+            section: 1,
+            note: "Remember this".into(),
+            quote: String::new(),
+            kind: String::new(),
+            created: "0".into(),
+            color: "blue".into(),
+        };
+        assert!(!legacy_note.is_highlight());
+        assert_eq!(legacy_note.summary(), "Remember this");
+    }
+
+    #[test]
+    fn test_persisted_state_defaults_on_partial_json() {
+        let json =
+            r#"{"theme":"Nord","recent":[{"path":"a.epub","title":"A","section":2,"opened":"1"}]}"#;
+        let state: PersistedState = serde_json::from_str(json).expect("partial JSON should parse");
+        assert_eq!(state.theme, "Nord");
+        assert_eq!(state.wpm, 220);
+        assert_eq!(state.library_view_mode, "grid");
+        assert_eq!(state.recent.len(), 1);
+        assert_eq!(state.recent[0].status, "reading");
+    }
+}

@@ -1,7 +1,11 @@
 mod config;
+mod export;
 mod html_utils;
+mod library;
 mod models;
+mod network;
 mod stardict;
+mod ui_helpers;
 
 use base64::Engine as _;
 use ebook_rs::SearchResult;
@@ -11,38 +15,31 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants},
     input::{Input, InputState},
     progress::Progress,
+    scroll::ScrollableElement,
     select::{Select, SelectEvent, SelectState},
     text::TextView,
+    theme::{Theme, ThemeMode},
 };
 use gpui_kit::*;
-use std::collections::HashMap;
-use std::io::Read;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use crate::config::{covers_dir, load_state, save_state};
+use crate::config::{load_state, save_state};
+use crate::export::{
+    format_annotations_markdown, format_book_info, format_citations, format_validation,
+};
 use crate::html_utils::*;
+use crate::library::*;
 use crate::models::*;
+use crate::network::*;
 use crate::stardict::StarDict;
+use crate::ui_helpers::*;
 
 fn href_to_index(book: &ebook_rs::Book, href: &str) -> Option<usize> {
     let href = href.split('#').next().unwrap_or(href);
     book.sections()
         .iter()
         .position(|s| s.href == href || s.full_path.ends_with(href) || href.ends_with(&s.href))
-}
-
-fn url_encode(s: &str) -> String {
-    let mut encoded = String::new();
-    for b in s.bytes() {
-        if b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.' || b == b'~' {
-            encoded.push(b as char);
-        } else if b == b' ' {
-            encoded.push('+');
-        } else {
-            encoded.push_str(&format!("%{:02X}", b));
-        }
-    }
-    encoded
 }
 
 fn notify_simple(window: &mut Window, cx: &mut Context<ReaderView>, title: &str, message: String) {
@@ -141,51 +138,21 @@ struct ReaderView {
 
     // Navigation history stack for jump-back (e.g. after following footnotes or links)
     nav_history: Vec<usize>,
+
+    // Per-section / per-column cached render state
+    cached_word_count: usize,
+    cached_progress: f32,
+    cached_constrained_html: String,
+    cached_column_px: f32,
+
+    // Resizable sidebar & synced gpui-kit theme mode
+    sidebar_width: f32,
+    synced_dark_mode: Option<bool>,
 }
 
 impl ReaderView {
-    fn simple_hash(s: &str) -> u64 {
-        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-        for b in s.as_bytes() {
-            h ^= *b as u64;
-            h = h.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-        h
-    }
-
-    fn mime_ext(mime: &str) -> &'static str {
-        if mime.contains("jpeg") || mime.contains("jpg") {
-            "jpg"
-        } else if mime.contains("png") {
-            "png"
-        } else if mime.contains("gif") {
-            "gif"
-        } else if mime.contains("webp") {
-            "webp"
-        } else if mime.contains("bmp") {
-            "bmp"
-        } else {
-            "img"
-        }
-    }
-
     fn cache_cover(&self, book: &ebook_rs::Book, path: &str) -> String {
-        let Some((bytes, mime)) = book.cover_image() else {
-            return String::new();
-        };
-        if bytes.len() > 256 * 1024 {
-            return String::new();
-        }
-        let dir = covers_dir();
-        let file = dir.join(format!(
-            "{}.{}",
-            Self::simple_hash(path),
-            Self::mime_ext(mime)
-        ));
-        std::fs::write(&file, &bytes)
-            .ok()
-            .map(|_| file.to_string_lossy().to_string())
-            .unwrap_or_default()
+        cache_cover_to_disk(book, path)
     }
 
     fn load_covers(&mut self) {
@@ -211,32 +178,8 @@ impl ReaderView {
         }
     }
 
-    fn parse_hex_color(s: &str) -> Option<Hsla> {
-        let s = s.trim().trim_start_matches('#');
-        if s.len() != 6 {
-            return None;
-        }
-        let r = u8::from_str_radix(&s[0..2], 16).ok()?;
-        let g = u8::from_str_radix(&s[2..4], 16).ok()?;
-        let b = u8::from_str_radix(&s[4..6], 16).ok()?;
-        Some(rgb(u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b)).into())
-    }
-
-    fn theme_colors(&self) -> (Hsla, Hsla) {
-        match self.theme.as_str() {
-            "Dark" => (rgb(0x1e1e1e).into(), rgb(0xe0e0e0).into()),
-            "OLED Black" => (rgb(0x000000).into(), rgb(0xd4d4d4).into()),
-            "Sepia" => (rgb(0xf4ecd8).into(), rgb(0x5b4636).into()),
-            "Nord" => (rgb(0x2e3440).into(), rgb(0xeceff4).into()),
-            "Solarized" => (rgb(0xfdf6e3).into(), rgb(0x657b83).into()),
-            "Solarized Dark" => (rgb(0x002b36).into(), rgb(0x839496).into()),
-            "E-Ink" => (rgb(0xffffff).into(), rgb(0x000000).into()),
-            "Custom" => (
-                Self::parse_hex_color(&self.custom_bg).unwrap_or(rgb(0xffffff).into()),
-                Self::parse_hex_color(&self.custom_fg).unwrap_or(rgb(0x202020).into()),
-            ),
-            _ => (rgb(0xffffff).into(), rgb(0x202020).into()),
-        }
+    fn theme_palette(&self) -> ThemePalette {
+        theme_palette_for(&self.theme, &self.custom_bg, &self.custom_fg)
     }
 
     fn save_state(&self) {
@@ -352,6 +295,12 @@ impl ReaderView {
             library_shelf_filter: 0,
             zen_mode: false,
             nav_history: Vec::new(),
+            cached_word_count: 0,
+            cached_progress: 0.0,
+            cached_constrained_html: String::new(),
+            cached_column_px: 0.0,
+            sidebar_width: 260.0,
+            synced_dark_mode: None,
         };
 
         if view.show_library {
@@ -364,96 +313,51 @@ impl ReaderView {
     }
 
     fn scan_folder(&mut self, folder: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
-        const EXTENSIONS: &[&str] = &[
-            "epub", "mobi", "azw3", "fb2", "pdf", "txt", "md", "docx", "odt", "rtf", "cbz", "lit",
-            "kfx", "kepub",
-        ];
-        let mut found = Vec::new();
-        let mut stack = vec![folder];
-        while let Some(dir) = stack.pop() {
-            if let Ok(entries) = std::fs::read_dir(&dir) {
-                for entry in entries.flatten() {
-                    let p = entry.path();
-                    if p.is_dir() {
-                        stack.push(p);
-                    } else if p.is_file()
-                        && let Some(ext) = p.extension().and_then(|e| e.to_str())
-                        && EXTENSIONS.contains(&ext.to_lowercase().as_str())
-                    {
-                        found.push(p);
-                    }
-                }
-            }
-        }
+        let existing_paths: HashSet<String> =
+            self.state.recent.iter().map(|r| r.path.clone()).collect();
+        let existing_hashes: HashSet<String> = self
+            .state
+            .recent
+            .iter()
+            .filter(|r| !r.content_hash.is_empty())
+            .map(|r| r.content_hash.clone())
+            .collect();
 
-        let mut added = 0usize;
-        let now = format!(
-            "{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs()
+        notify_simple(
+            window,
+            cx,
+            "Scanning Folder",
+            format!("Scanning {} in the background...", folder.display()),
         );
 
-        for p in found {
-            let key = p.to_string_lossy().to_string();
-            if self.state.recent.iter().any(|r| r.path == key) {
-                continue;
-            }
-            if let Ok(book) = ebook_rs::Book::from_file(&p) {
-                let title = book.metadata().title.clone();
-                let author = book.metadata().creator().to_string();
-                let format = p
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .unwrap_or("")
-                    .to_lowercase();
-                let total = book.sections().len();
-                let cover = self.cache_cover(&book, &key);
-                let file_size = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
-                let content_hash = if file_size <= 32 * 1024 * 1024 {
-                    book.fingerprint().content_hash
+        let bg = cx.background_executor().clone();
+        cx.spawn_in(window, async move |view, cx| {
+            let scanned = bg
+                .spawn(async move { scan_folder_books(folder, existing_paths, existing_hashes) })
+                .await;
+            let _ = view.update_in(cx, |view, window, cx| {
+                let added = merge_scanned_books(&mut view.state.recent, scanned);
+                if added > 0 {
+                    view.save_state();
+                    view.load_covers();
+                    notify_simple(
+                        window,
+                        cx,
+                        "Folder Scanned",
+                        format!("Added {} book(s) to your library", added),
+                    );
+                    cx.notify();
                 } else {
-                    String::new()
-                };
-
-                self.state.recent.push(RecentBook {
-                    path: key,
-                    title,
-                    section: 0,
-                    opened: now.clone(),
-                    favorite: false,
-                    status: "reading".into(),
-                    content_hash,
-                    cfi: String::new(),
-                    author,
-                    format,
-                    total,
-                    cover,
-                    reading_time_secs: 0,
-                });
-                added += 1;
-            }
-        }
-
-        if added > 0 {
-            self.save_state();
-            self.load_covers();
-            notify_simple(
-                window,
-                cx,
-                "Folder Scanned",
-                format!("Added {} book(s) to your library", added),
-            );
-            cx.notify();
-        } else {
-            notify_simple(
-                window,
-                cx,
-                "Scan Complete",
-                "No new books found in folder".into(),
-            );
-        }
+                    notify_simple(
+                        window,
+                        cx,
+                        "Scan Complete",
+                        "No new books found in folder".into(),
+                    );
+                }
+            });
+        })
+        .detach();
     }
 
     fn open_file(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
@@ -467,17 +371,17 @@ impl ReaderView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let book_result = if let Some(pp) = &passphrase {
-            std::fs::read(&path)
-                .map_err(|e| format!("io: {e}"))
-                .and_then(|bytes| {
-                    let title = path.file_stem().and_then(|s| s.to_str()).unwrap_or("eBook");
-                    ebook_rs::Book::from_bytes_with_passphrase(&bytes, title, pp)
-                        .map_err(|e| e.to_string())
-                })
-        } else {
-            ebook_rs::Book::from_file(&path).map_err(|e| e.to_string())
-        };
+        let book_result: Result<ebook_rs::Book, ebook_rs::EbookError> =
+            if let Some(pp) = &passphrase {
+                std::fs::read(&path)
+                    .map_err(ebook_rs::EbookError::from)
+                    .and_then(|bytes| {
+                        let title = path.file_stem().and_then(|s| s.to_str()).unwrap_or("eBook");
+                        ebook_rs::Book::from_bytes_with_passphrase(&bytes, title, pp)
+                    })
+            } else {
+                ebook_rs::Book::from_file(&path)
+            };
         match book_result {
             Ok(mut book) => {
                 if book.locations().total_locations == 0 {
@@ -632,18 +536,20 @@ impl ReaderView {
                 self.load_current(cx);
             }
             Err(e) => {
-                let msg = e;
-                if (msg.to_lowercase().contains("drm")
-                    || msg.to_lowercase().contains("passphrase")
-                    || msg.to_lowercase().contains("lcp"))
-                    && passphrase.is_none()
-                {
-                    self.passphrase_pending = Some(path.clone());
-                    self.passphrase_error = msg;
-                    self.passphrase_modal = true;
-                } else if passphrase.is_some() {
-                    self.passphrase_error = msg;
-                    self.passphrase_modal = true;
+                let msg = e.to_string();
+                match e {
+                    ebook_rs::EbookError::DrmProtected(_) if passphrase.is_none() => {
+                        self.passphrase_pending = Some(path.clone());
+                        self.passphrase_error = msg;
+                        self.passphrase_modal = true;
+                    }
+                    _ if passphrase.is_some() => {
+                        self.passphrase_error = msg;
+                        self.passphrase_modal = true;
+                    }
+                    _ => {
+                        notify_simple(window, cx, "Open failed", msg);
+                    }
                 }
             }
         }
@@ -651,9 +557,13 @@ impl ReaderView {
     }
 
     fn load_current(&mut self, _cx: &mut Context<Self>) {
+        self.cached_word_count = 0;
+        self.cached_progress = 0.0;
+        let column_px = (self.max_width - 2.0 * self.margin).max(160.0);
         if let Some(book) = &self.book {
             match book.get_section(self.current) {
                 Ok(sec) => {
+                    self.cached_word_count = sec.plain_text.split_whitespace().count();
                     let current_annotations: Vec<Annotation> = self
                         .annotations
                         .iter()
@@ -679,7 +589,22 @@ impl ReaderView {
                     self.html = format!("<p>Error: {}</p>", e);
                 }
             }
+            if !book.sections().is_empty() {
+                let cfi = book
+                    .to_readium_locator(self.current, 0)
+                    .ok()
+                    .and_then(|l| l.locations.cfi);
+                self.cached_progress = if let Some(cfi) = cfi
+                    && book.locations().total_locations > 0
+                {
+                    (book.locations().percentage_from_cfi(&cfi) * 100.0) as f32
+                } else {
+                    (self.current as f32 + 1.0) / book.sections().len() as f32 * 100.0
+                };
+            }
         }
+        self.cached_column_px = column_px;
+        self.cached_constrained_html = constrain_images(&self.html, column_px);
         if let Some(path) = &self.book_path {
             let key = path.to_string_lossy().to_string();
             let cfi = self
@@ -877,27 +802,11 @@ impl ReaderView {
         cx.notify();
 
         let word_owned = word.to_string();
+        let bg = cx.background_executor().clone();
         cx.spawn(async move |view, cx| {
-            let url = format!(
-                "https://api.dictionaryapi.dev/api/v2/entries/en/{}",
-                word_owned
-            );
-            let res = match ureq::get(&url).call() {
-                Ok(resp) => {
-                    let body = resp.into_body().read_to_string().unwrap_or_default();
-                    if let Some(idx) = body.find("\"definition\":\"") {
-                        let rest = &body[idx + 14..];
-                        if let Some(end) = rest.find('"') {
-                            rest[..end].to_string()
-                        } else {
-                            "No definition found".into()
-                        }
-                    } else {
-                        "No definition found".into()
-                    }
-                }
-                Err(_) => "Lookup failed (offline or word not found)".into(),
-            };
+            let res = bg
+                .spawn(async move { fetch_dictionary_definition(&word_owned) })
+                .await;
             let _ = view.update(cx, |view, cx| {
                 view.dictionary_result = res;
                 cx.notify();
@@ -974,8 +883,7 @@ impl ReaderView {
         &mut self,
         _window: &mut Window,
         cx: &mut Context<Self>,
-        bg: Hsla,
-        fg: Hsla,
+        palette: ThemePalette,
     ) -> AnyElement {
         let on_open = cx.listener(|view, _ev, window, cx| {
             if let Some(path) = rfd::FileDialog::new()
@@ -1005,15 +913,6 @@ impl ReaderView {
             view.library_sort = (view.library_sort + 1) % 3;
             cx.notify();
         });
-        let fav_label = if self.library_favorites_only {
-            "Favorites: on"
-        } else {
-            "Favorites: off"
-        };
-        let on_fav_toggle = cx.listener(|view, _ev, _w, cx| {
-            view.library_favorites_only = !view.library_favorites_only;
-            cx.notify();
-        });
 
         let is_list_view = self.state.library_view_mode == "list";
         let on_toggle_view = cx.listener(|view, _ev, _w, cx| {
@@ -1026,112 +925,116 @@ impl ReaderView {
             cx.notify();
         });
 
-        let mut v = v_flex()
-            .size_full()
-            .bg(bg)
-            .text_color(fg)
-            .p_4()
-            .gap_4()
-            .child(
-                h_flex()
-                    .items_center()
-                    .gap_2()
-                    .child(div().text_size(px(24.0)).child("eParna Library"))
-                    .child(Button::new("openlib").label("Open file").on_click(on_open))
-                    .child(
-                        Button::new("scanlib")
-                            .label("Scan folder")
-                            .on_click(on_scan),
-                    )
-                    .child(Button::new("sortlib").label(sort_label).on_click(on_sort))
-                    .child(
-                        Button::new("favlib")
-                            .label(fav_label)
-                            .on_click(on_fav_toggle),
-                    )
-                    .child(
-                        Button::new("viewmode")
-                            .label(if is_list_view {
-                                "View: List"
-                            } else {
-                                "View: Grid"
-                            })
-                            .on_click(on_toggle_view),
-                    ),
-            );
+        let shelf_btn = |id: &str, label: &str, idx: usize, active: usize| {
+            let b = Button::new(id.to_string()).label(label.to_string());
+            let b = if active == idx {
+                b.primary()
+            } else {
+                b.ghost()
+            };
+            b.on_click(cx.listener(move |v, _, _, cx| {
+                v.library_shelf_filter = idx;
+                cx.notify();
+            }))
+        };
 
-        v = v.child(
+        let header =
             h_flex()
-                .gap_2()
+                .w_full()
+                .justify_between()
                 .items_center()
+                .gap_3()
+                .pb_2()
+                .border_b_1()
+                .border_color(palette.border)
                 .child(
-                    Button::new("shelf_all")
-                        .ghost()
-                        .label(if self.library_shelf_filter == 0 {
-                            "● All"
-                        } else {
-                            "All"
-                        })
-                        .on_click(cx.listener(|v, _, _, cx| {
-                            v.library_shelf_filter = 0;
-                            cx.notify();
-                        })),
+                    h_flex()
+                        .items_center()
+                        .gap_2()
+                        .child(div().w(px(32.0)).h(px(32.0)).overflow_hidden().child(
+                            TextView::html(
+                                "app-logo",
+                                format!(
+                                    "<img src=\"{}\" width=\"32\" height=\"32\"/>",
+                                    app_icon_data_uri()
+                                ),
+                            ),
+                        ))
+                        .child(
+                            div()
+                                .text_size(px(20.0))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child("eParna Library"),
+                        ),
                 )
                 .child(
-                    Button::new("shelf_reading")
-                        .ghost()
-                        .label(if self.library_shelf_filter == 1 {
-                            "● Reading"
-                        } else {
-                            "Reading"
-                        })
-                        .on_click(cx.listener(|v, _, _, cx| {
-                            v.library_shelf_filter = 1;
-                            cx.notify();
-                        })),
-                )
-                .child(
-                    Button::new("shelf_fav")
-                        .ghost()
-                        .label(if self.library_shelf_filter == 2 {
-                            "● Favorites"
-                        } else {
-                            "Favorites"
-                        })
-                        .on_click(cx.listener(|v, _, _, cx| {
-                            v.library_shelf_filter = 2;
-                            cx.notify();
-                        })),
-                )
-                .child(
-                    Button::new("shelf_fin")
-                        .ghost()
-                        .label(if self.library_shelf_filter == 3 {
-                            "● Finished"
-                        } else {
-                            "Finished"
-                        })
-                        .on_click(cx.listener(|v, _, _, cx| {
-                            v.library_shelf_filter = 3;
-                            cx.notify();
-                        })),
-                )
-                .child(
-                    Button::new("shelf_want")
-                        .ghost()
-                        .label(if self.library_shelf_filter == 4 {
-                            "● Want to Read"
-                        } else {
-                            "Want to Read"
-                        })
-                        .on_click(cx.listener(|v, _, _, cx| {
-                            v.library_shelf_filter = 4;
-                            cx.notify();
-                        })),
-                ),
-        );
+                    h_flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            Button::new("openlib")
+                                .primary()
+                                .label("Open file")
+                                .on_click(on_open),
+                        )
+                        .child(
+                            Button::new("scanlib")
+                                .outline()
+                                .label("Scan folder")
+                                .on_click(on_scan),
+                        )
+                        .child(
+                            Button::new("sortlib")
+                                .ghost()
+                                .label(sort_label)
+                                .on_click(on_sort),
+                        )
+                        .child(
+                            Button::new("viewmode")
+                                .ghost()
+                                .label(if is_list_view {
+                                    "View: List"
+                                } else {
+                                    "View: Grid"
+                                })
+                                .on_click(on_toggle_view),
+                        ),
+                );
 
-        v = v.child(Input::new(&self.library_search_input));
+        let shelves = h_flex()
+            .gap_2()
+            .items_center()
+            .flex_wrap()
+            .child(shelf_btn("shelf_all", "All", 0, self.library_shelf_filter))
+            .child(shelf_btn(
+                "shelf_reading",
+                "Reading",
+                1,
+                self.library_shelf_filter,
+            ))
+            .child(shelf_btn(
+                "shelf_fav",
+                "Favorites",
+                2,
+                self.library_shelf_filter,
+            ))
+            .child(shelf_btn(
+                "shelf_fin",
+                "Finished",
+                3,
+                self.library_shelf_filter,
+            ))
+            .child(shelf_btn(
+                "shelf_want",
+                "Want to Read",
+                4,
+                self.library_shelf_filter,
+            ));
+
+        let mut scroll_body = v_flex().w_full().gap_4().pb_6();
+        scroll_body = scroll_body
+            .child(shelves)
+            .child(Input::new(&self.library_search_input));
         let q = self.library_search_input.read(cx).value().to_lowercase();
         let mut recent = self.state.recent.clone();
         match self.library_sort {
@@ -1146,11 +1049,11 @@ impl ReaderView {
             .collect();
         in_progress.sort_by_key(|r| std::cmp::Reverse(r.opened.clone()));
         if !in_progress.is_empty() {
-            v = v.child(section_heading("Continue reading"));
+            scroll_body = scroll_body.child(section_heading("Continue reading"));
             let mut row = h_flex().gap_3().flex_wrap();
             for (i, r) in in_progress.iter().take(4).enumerate() {
                 let id = format!("cont{i}");
-                let on_open = {
+                let on_open_book = {
                     let p = r.path.clone();
                     cx.listener(move |view, _ev, window, cx| {
                         view.open_file(PathBuf::from(p.clone()), window, cx);
@@ -1161,37 +1064,43 @@ impl ReaderView {
                     cx.listener(move |view, _ev, _w, cx| view.toggle_favorite(p.clone(), cx))
                 };
                 row = row.child(wide_tile(
-                    id.clone(),
-                    cover_for(&self.covers, r),
-                    book_title(r),
-                    book_subtitle(r),
-                    book_pct(r),
+                    BookTileMeta {
+                        id: id.clone(),
+                        cover: cover_for(&self.covers, r),
+                        title: book_title(r),
+                        subtitle: book_subtitle(r),
+                        format: r.format.clone(),
+                        pct: book_pct(r),
+                    },
+                    palette,
                     h_flex()
                         .gap_1()
                         .items_center()
                         .child(
                             Button::new(format!("{id}-open"))
+                                .primary()
                                 .label("Resume")
-                                .on_click(on_open),
+                                .on_click(on_open_book),
                         )
                         .child(
                             Button::new(format!("{id}-fav"))
                                 .ghost()
                                 .label(star_label(r.favorite))
+                                .tooltip("Toggle favorite")
                                 .on_click(on_fav),
                         )
                         .into_any_element(),
                 ));
             }
-            v = v.child(row);
+            scroll_body = scroll_body.child(row);
         }
 
-        v = v.child(section_heading(&format!("All books ({})", recent.len())));
+        scroll_body = scroll_body.child(section_heading(&format!("All books ({})", recent.len())));
 
+        let mut shown = 0usize;
         if is_list_view {
             // ---- List View Layout -----------------------------------------------
             let mut list_col = v_flex().gap_2().w_full();
-            let mut shown = 0usize;
             for (i, r) in recent.iter().enumerate() {
                 if self.library_favorites_only && !r.favorite {
                     continue;
@@ -1215,7 +1124,7 @@ impl ReaderView {
                 shown += 1;
                 let id = format!("list-bk{i}");
                 let pct = book_pct(r);
-                let on_open = {
+                let on_open_book = {
                     let p = r.path.clone();
                     cx.listener(move |view, _ev, window, cx| {
                         view.open_file(PathBuf::from(p.clone()), window, cx);
@@ -1244,24 +1153,42 @@ impl ReaderView {
                         .w_full()
                         .p_2()
                         .gap_3()
+                        .rounded_md()
+                        .bg(palette.surface)
                         .border_1()
+                        .border_color(palette.border)
                         .items_center()
                         .child(cover_art(
                             format!("{id}-c"),
                             cover_for(&self.covers, r),
+                            &book_title(r),
+                            &r.format,
+                            palette,
                             38.0,
                             52.0,
                         ))
                         .child(
                             v_flex()
                                 .flex_1()
-                                .child(div().text_size(px(14.0)).child(book_title(r)))
-                                .child(div().text_size(px(12.0)).child(book_subtitle(r)))
-                                .child(div().text_size(px(11.0)).child(format!(
-                                    "{} min read · {} sections",
-                                    r.reading_time_secs / 60,
-                                    r.total
-                                ))),
+                                .child(
+                                    div()
+                                        .text_size(px(14.0))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .child(book_title(r)),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(12.0))
+                                        .text_color(palette.muted)
+                                        .child(book_subtitle(r)),
+                                )
+                                .child(div().text_size(px(11.0)).text_color(palette.muted).child(
+                                    format!(
+                                        "{} min read · {} sections",
+                                        r.reading_time_secs / 60,
+                                        r.total
+                                    ),
+                                )),
                         )
                         .child(
                             v_flex()
@@ -1270,6 +1197,7 @@ impl ReaderView {
                                 .child(
                                     div()
                                         .text_size(px(11.0))
+                                        .text_color(palette.muted)
                                         .text_align(TextAlign::Center)
                                         .child(format!("{pct:.0}%")),
                                 ),
@@ -1280,42 +1208,40 @@ impl ReaderView {
                                 .items_center()
                                 .child(
                                     Button::new(format!("{id}-open"))
+                                        .primary()
                                         .label("Read")
-                                        .on_click(on_open),
+                                        .on_click(on_open_book),
                                 )
                                 .child(
                                     Button::new(format!("{id}-st"))
                                         .ghost()
                                         .label(status_badge)
+                                        .tooltip("Cycle reading status")
                                         .on_click(on_status),
                                 )
                                 .child(
                                     Button::new(format!("{id}-fav"))
                                         .ghost()
                                         .label(star_label(r.favorite))
+                                        .tooltip("Toggle favorite")
                                         .on_click(on_fav),
                                 )
                                 .child(
                                     Button::new(format!("{id}-rm"))
                                         .ghost()
                                         .label("\u{2715}")
+                                        .tooltip("Remove from library")
                                         .on_click(on_remove),
                                 ),
                         ),
                 );
             }
-            v = v.child(list_col);
-            if shown == 0 {
-                v = v.child(
-                    div()
-                        .text_size(px(13.0))
-                        .child("No books match the current filter."),
-                );
+            if shown > 0 {
+                scroll_body = scroll_body.child(list_col);
             }
         } else {
             // ---- Grid View Layout -----------------------------------------------
             let mut grid = h_flex().gap_3().flex_wrap();
-            let mut shown = 0usize;
             for (i, r) in recent.iter().enumerate() {
                 if self.library_favorites_only && !r.favorite {
                     continue;
@@ -1339,7 +1265,7 @@ impl ReaderView {
                 shown += 1;
                 let id = format!("bk{i}");
                 let pct = book_pct(r);
-                let on_open = {
+                let on_open_book = {
                     let p = r.path.clone();
                     cx.listener(move |view, _ev, window, cx| {
                         view.open_file(PathBuf::from(p.clone()), window, cx);
@@ -1363,61 +1289,121 @@ impl ReaderView {
                     _ => "Reading",
                 };
                 grid = grid.child(grid_tile(
-                    id.clone(),
-                    cover_for(&self.covers, r),
-                    book_title(r),
-                    book_subtitle(r),
-                    pct,
+                    BookTileMeta {
+                        id: id.clone(),
+                        cover: cover_for(&self.covers, r),
+                        title: book_title(r),
+                        subtitle: book_subtitle(r),
+                        format: r.format.clone(),
+                        pct,
+                    },
+                    palette,
                     h_flex()
                         .gap_1()
                         .items_center()
                         .child(
                             Button::new(format!("{id}-open"))
+                                .primary()
                                 .label(if pct > 0.0 && pct < 100.0 {
                                     "Continue"
                                 } else {
                                     "Open"
                                 })
-                                .on_click(on_open),
+                                .on_click(on_open_book),
                         )
                         .child(
                             Button::new(format!("{id}-st"))
                                 .ghost()
                                 .label(status_badge)
+                                .tooltip("Cycle reading status")
                                 .on_click(on_status),
                         )
                         .child(
                             Button::new(format!("{id}-fav"))
                                 .ghost()
                                 .label(star_label(r.favorite))
+                                .tooltip("Toggle favorite")
                                 .on_click(on_fav),
                         )
                         .child(
                             Button::new(format!("{id}-rm"))
                                 .ghost()
                                 .label("\u{2715}")
+                                .tooltip("Remove from library")
                                 .on_click(on_remove),
                         )
                         .into_any_element(),
                 ));
             }
-            v = v.child(grid);
-            if shown == 0 {
-                v = v.child(
-                    div()
-                        .text_size(px(13.0))
-                        .child(if self.state.recent.is_empty() {
-                            "No books yet \u{2014} open a file or scan a folder to get started."
-                        } else {
-                            "Nothing matches the current filter."
-                        }),
-                );
+            if shown > 0 {
+                scroll_body = scroll_body.child(grid);
             }
         }
 
+        if shown == 0 {
+            let empty_msg = if self.state.recent.is_empty() {
+                "Your library is empty. Open a book file or scan a folder to build your shelf."
+            } else {
+                "No books match the current shelf or search filter."
+            };
+            let mut empty_card = v_flex()
+                .w_full()
+                .p_6()
+                .gap_3()
+                .items_center()
+                .rounded_md()
+                .bg(palette.surface)
+                .border_1()
+                .border_color(palette.border)
+                .child(
+                    div()
+                        .text_size(px(14.0))
+                        .text_color(palette.muted)
+                        .child(empty_msg),
+                );
+            if self.state.recent.is_empty() {
+                let on_open_empty = cx.listener(|view, _ev, window, cx| {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .add_filter(
+                            "Ebook",
+                            &[
+                                "epub", "mobi", "azw3", "fb2", "pdf", "txt", "md", "docx", "odt",
+                                "rtf", "cbz", "lit", "kfx", "kepub",
+                            ],
+                        )
+                        .pick_file()
+                    {
+                        view.open_file(path, window, cx);
+                    }
+                });
+                let on_scan_empty = cx.listener(|view, _ev, window, cx| {
+                    if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+                        view.scan_folder(folder, window, cx);
+                    }
+                });
+                empty_card = empty_card.child(
+                    h_flex()
+                        .gap_2()
+                        .child(
+                            Button::new("empty-open")
+                                .primary()
+                                .label("Open file")
+                                .on_click(on_open_empty),
+                        )
+                        .child(
+                            Button::new("empty-scan")
+                                .outline()
+                                .label("Scan folder")
+                                .on_click(on_scan_empty),
+                        ),
+                );
+            }
+            scroll_body = scroll_body.child(empty_card);
+        }
+
         // OPDS Catalog
-        v = v.child(div().text_size(px(16.0)).child("OPDS catalog"));
-        v = v.child(Input::new(&self.opds_url_input));
+        scroll_body = scroll_body.child(section_heading("OPDS catalog"));
+        scroll_body = scroll_body.child(Input::new(&self.opds_url_input));
         let on_fetch = cx.listener(|view, _ev, _w, cx| {
             let url = view.opds_url_input.read(cx).value().to_string();
             if url.trim().is_empty() {
@@ -1425,37 +1411,9 @@ impl ReaderView {
             }
             view.opds_status = "Fetching OPDS catalog...".into();
             cx.notify();
+            let bg = cx.background_executor().clone();
             cx.spawn(async move |view, cx| {
-                let res = match ureq::get(&url).call() {
-                    Ok(resp) => {
-                        let body = resp.into_body().read_to_string().unwrap_or_default();
-                        let feed = if body.trim_start().starts_with('{') {
-                            ebook_rs::OpdsFeed::parse_json(&body)
-                        } else {
-                            ebook_rs::OpdsFeed::parse_atom_xml(&body)
-                        };
-                        match feed {
-                            Ok(f) => {
-                                let entries: Vec<(String, String)> = f
-                                    .entries
-                                    .iter()
-                                    .map(|e| {
-                                        (
-                                            e.title.clone(),
-                                            e.download_link(None)
-                                                .map(|l| l.href.clone())
-                                                .unwrap_or_default(),
-                                        )
-                                    })
-                                    .collect();
-                                let count = entries.len();
-                                (format!("{} entries", count), entries)
-                            }
-                            Err(e) => (format!("Parse error: {e}"), Vec::new()),
-                        }
-                    }
-                    Err(e) => (format!("Fetch error: {e}"), Vec::new()),
-                };
+                let res = bg.spawn(async move { fetch_opds_feed(&url) }).await;
                 let _ = view.update(cx, |view, cx| {
                     view.opds_status = res.0;
                     view.opds_entries = res.1;
@@ -1465,12 +1423,17 @@ impl ReaderView {
             .detach();
         });
 
-        v = v.child(Button::new("fetchopds").label("Fetch").on_click(on_fetch));
-        v = v.child(div().text_size(px(12.0)).child(self.opds_status.clone()));
+        scroll_body = scroll_body.child(Button::new("fetchopds").label("Fetch").on_click(on_fetch));
+        scroll_body = scroll_body.child(
+            div()
+                .text_size(px(12.0))
+                .text_color(palette.muted)
+                .child(self.opds_status.clone()),
+        );
         for (title, href) in self.opds_entries.clone() {
             let href2 = href.clone();
             let title_name = title.clone();
-            let on_open_entry = cx.listener(move |view, _ev, _window, cx| {
+            let on_open_entry = cx.listener(move |view, _ev, window, cx| {
                 if href2.is_empty() {
                     return;
                 }
@@ -1482,24 +1445,25 @@ impl ReaderView {
                     .chars()
                     .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
                     .collect::<String>();
-                cx.spawn(async move |view, cx| {
-                    let dl_res = ureq::get(&href).call().and_then(|resp| {
-                        let mut bytes = Vec::new();
-                        resp.into_body().as_reader().read_to_end(&mut bytes)?;
-                        Ok(bytes)
-                    });
-                    match dl_res {
-                        Ok(bytes) => {
-                            let hash = Self::simple_hash(&href);
+                let bg = cx.background_executor().clone();
+                cx.spawn_in(window, async move |view, cx| {
+                    let dl_res = bg
+                        .spawn(async move {
+                            let bytes = download_opds_book(&href)?;
+                            let hash = simple_hash(&href);
                             let tmp =
                                 std::env::temp_dir().join(format!("{clean_title}_{hash}.epub"));
-                            if std::fs::write(&tmp, &bytes).is_ok() {
-                                let _ = view.update(cx, |view, cx| {
-                                    view.opds_status =
-                                        format!("Downloaded '{}'. Opening...", title);
-                                    cx.notify();
-                                });
-                            }
+                            std::fs::write(&tmp, &bytes).map_err(|e| e.to_string())?;
+                            Ok::<PathBuf, String>(tmp)
+                        })
+                        .await;
+                    match dl_res {
+                        Ok(tmp) => {
+                            let _ = view.update_in(cx, |view, window, cx| {
+                                view.opds_status = format!("Opened '{}'", title);
+                                view.open_file(tmp, window, cx);
+                                cx.notify();
+                            });
                         }
                         Err(e) => {
                             let _ = view.update(cx, |view, cx| {
@@ -1511,7 +1475,7 @@ impl ReaderView {
                 })
                 .detach();
             });
-            v = v.child(
+            scroll_body = scroll_body.child(
                 Button::new(format!("opds{}", title))
                     .ghost()
                     .label(title)
@@ -1519,7 +1483,21 @@ impl ReaderView {
             );
         }
 
-        v.into_any_element()
+        v_flex()
+            .size_full()
+            .bg(palette.bg)
+            .text_color(palette.fg)
+            .p_4()
+            .gap_4()
+            .child(header)
+            .child(
+                div()
+                    .id("library-scroll")
+                    .flex_1()
+                    .overflow_y_scrollbar()
+                    .child(scroll_body),
+            )
+            .into_any_element()
     }
 
     fn remove_recent(&mut self, path: String, cx: &mut Context<Self>) {
@@ -1639,96 +1617,15 @@ impl ReaderView {
 
     fn book_info_body(&self) -> Option<String> {
         let book = self.book.as_ref()?;
-        let m = book.metadata();
-        let mut out = format!("{}\n", m.title);
-        if !m.creators.is_empty() {
-            out.push_str(&format!("{}\n", m.creators.join(", ")));
-        }
-        if let Some(p) = m.publisher() {
-            out.push_str(&format!("{}\n", p));
-        }
-        out.push_str(&format!("{} sections\n", book.sections().len()));
-
-        // Display current section page / viewport dimensions if present (e.g. PDF or Fixed-Layout)
-        if let Ok(sec) = book.get_section(self.current)
-            && let (Some(w), Some(h)) = (sec.viewport_width, sec.viewport_height)
-        {
-            out.push_str(&format!("Page size: {:.0} × {:.0} pt\n", w, h));
-        }
-
-        if let Some(path) = &self.book_path {
+        let recent = self.book_path.as_ref().and_then(|path| {
             let key = path.to_string_lossy().to_string();
-            if let Some(r) = self.state.recent.iter().find(|r| r.path == key) {
-                let mins = r.reading_time_secs / 60;
-                out.push_str(&format!("Time read: {} min\n", mins));
-            }
-        }
-
-        // Display EPUB 3 Media Overlays if present
-        if !book.media_overlays.is_empty() {
-            out.push_str(&format!(
-                "Audio read-along (SMIL): {} overlay package(s) available\n",
-                book.media_overlays.len()
-            ));
-        }
-
-        // Display reading flow
-        out.push_str(&format!(
-            "Reading direction: {}\n",
-            if self.rtl_mode {
-                "Right-to-Left (RTL)"
-            } else {
-                "Left-to-Right (LTR)"
-            }
-        ));
-
-        out.push('\n');
-        let detected_lang = book.detect_language();
-        for (label, value) in [
-            ("Language", Some(m.language().to_string())),
-            ("Detected Language", detected_lang),
-            ("Published", m.pub_date.clone()),
-            ("Identifier", m.identifier.clone()),
-            ("Rights", m.rights.clone()),
-            (
-                "Subjects",
-                (!m.subjects.is_empty()).then(|| m.subjects.join(", ")),
-            ),
-        ] {
-            if let Some(v) = value.filter(|v| !v.trim().is_empty()) {
-                out.push_str(&format!("{label}: {v}\n"));
-            }
-        }
-        if let Some(d) = &m.description {
-            let d = d.trim();
-            if !d.is_empty() {
-                out.push_str("\n\n");
-                out.push_str(d);
-            }
-        }
-        Some(out.trim_end().to_string())
+            self.state.recent.iter().find(|r| r.path == key)
+        });
+        Some(format_book_info(book, self.current, self.rtl_mode, recent))
     }
 
     fn validation_body(&self) -> Option<String> {
-        let report = self.book.as_ref()?.validate();
-        let mut out = format!(
-            "{} · {} error(s), {} warning(s), {} note(s)\n",
-            if report.is_valid { "Valid" } else { "Invalid" },
-            report.errors_count,
-            report.warnings_count,
-            report.info_count
-        );
-        if report.errors.is_empty() {
-            out.push_str("\nNo structural problems found.");
-            return Some(out);
-        }
-        for e in report.errors.iter().take(50) {
-            out.push_str(&format!(
-                "\n[{:?}] {} — {}\n",
-                e.severity, e.code, e.message
-            ));
-        }
-        Some(out)
+        self.book.as_ref().map(format_validation)
     }
 
     fn adjust_font_size(&mut self, delta: f32, cx: &mut Context<Self>) {
@@ -1923,7 +1820,7 @@ Sidebars & Panels:
                     );
                 }
             }
-            Err(e) => notify_simple(window, cx, "Export failed", e),
+            Err(e) => notify_simple(window, cx, "Export failed", e.to_string()),
         }
     }
 
@@ -1962,7 +1859,7 @@ Sidebars & Panels:
                     );
                 }
             }
-            Err(e) => notify_simple(window, cx, "Export failed", e),
+            Err(e) => notify_simple(window, cx, "Export failed", e.to_string()),
         }
     }
 
@@ -2020,66 +1917,11 @@ Sidebars & Panels:
     }
 
     fn citations_body(&self) -> Option<String> {
-        let book = self.book.as_ref()?;
-        let mut out = String::new();
-        out.push_str("=== BibTeX ===\n");
-        out.push_str(&book.to_bibtex());
-        out.push_str("\n\n=== APA (7th ed.) ===\n");
-        out.push_str(&book.to_apa());
-        out.push_str("\n\n=== MLA (9th ed.) ===\n");
-        out.push_str(&book.to_mla());
-        out.push_str("\n\n=== Chicago (17th ed.) ===\n");
-        out.push_str(&book.to_chicago());
-        Some(out)
+        self.book.as_ref().map(format_citations)
     }
 
     fn annotations_to_markdown(&self, title: &str, author: &str) -> String {
-        let mut out = String::new();
-        out.push_str("---\n");
-        out.push_str(&format!("title: \"{}\"\n", title.replace('"', "\\\"")));
-        if !author.is_empty() {
-            out.push_str(&format!("author: \"{}\"\n", author.replace('"', "\\\"")));
-        }
-        out.push_str("tags:\n  - reading-notes\n  - eParna\n");
-        out.push_str("---\n\n");
-        out.push_str(&format!("# Reading Notes: {title}\n\n"));
-        if self.annotations.is_empty() {
-            out.push_str("_No annotations yet._\n");
-            return out;
-        }
-        for (i, a) in self.annotations.iter().enumerate() {
-            out.push_str(&format!("### Item #{}\n\n", i + 1));
-            let badge = match a.color.as_str() {
-                "green" => "Green",
-                "blue" => "Blue",
-                "pink" => "Pink",
-                "purple" => "Purple",
-                _ => "Yellow",
-            };
-            out.push_str(&format!(
-                "*Section {} · {} · Color: {} · Date: {}*\n\n",
-                a.section + 1,
-                if a.is_highlight() {
-                    "Highlight"
-                } else {
-                    "Note"
-                },
-                badge,
-                a.created
-            ));
-            if !a.quote.trim().is_empty() {
-                for line in a.quote.trim().lines() {
-                    out.push_str("> ");
-                    out.push_str(line);
-                    out.push('\n');
-                }
-                out.push('\n');
-            }
-            if !a.note.trim().is_empty() {
-                out.push_str(&format!("**Note:** {}\n\n", a.note));
-            }
-        }
-        out
+        format_annotations_markdown(title, author, &self.annotations)
     }
 
     fn copy_annotations_markdown(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2145,185 +1987,6 @@ Sidebars & Panels:
     }
 }
 
-fn book_pct(r: &RecentBook) -> f32 {
-    if r.total == 0 {
-        0.0
-    } else {
-        ((r.section + 1) as f32 / r.total as f32 * 100.0).round()
-    }
-}
-
-fn book_title(r: &RecentBook) -> String {
-    if r.title.is_empty() {
-        r.path.clone()
-    } else {
-        r.title.clone()
-    }
-}
-
-fn book_subtitle(r: &RecentBook) -> String {
-    match (r.author.is_empty(), r.format.is_empty()) {
-        (false, false) => format!("{} \u{b7} {}", r.author, r.format),
-        (false, true) => r.author.clone(),
-        (true, false) => r.format.clone(),
-        (true, true) => String::new(),
-    }
-}
-
-fn star_label(favorite: bool) -> &'static str {
-    if favorite { "\u{2605}" } else { "\u{2606}" }
-}
-
-fn cover_for(covers: &HashMap<String, String>, r: &RecentBook) -> Option<String> {
-    if r.cover.is_empty() {
-        None
-    } else {
-        covers.get(&r.cover).cloned()
-    }
-}
-
-fn section_heading(text: &str) -> AnyElement {
-    div()
-        .text_size(px(16.0))
-        .child(text.to_string())
-        .into_any_element()
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        return s.to_string();
-    }
-    let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
-    out.push('\u{2026}');
-    out
-}
-
-fn cover_art(id: String, cover: Option<String>, w: f32, h: f32) -> AnyElement {
-    match cover {
-        Some(uri) => div()
-            .w(px(w))
-            .h(px(h))
-            .overflow_hidden()
-            .child(TextView::html(
-                id,
-                format!("<img src=\"{uri}\" width=\"{w}\" height=\"{h}\"/>"),
-            ))
-            .into_any_element(),
-        None => v_flex()
-            .w(px(w))
-            .h(px(h))
-            .items_center()
-            .justify_center()
-            .border_1()
-            .child(div().text_size(px(24.0)).child("\u{1F4D6}"))
-            .into_any_element(),
-    }
-}
-
-fn grid_tile(
-    id: String,
-    cover: Option<String>,
-    title: String,
-    subtitle: String,
-    pct: f32,
-    actions: AnyElement,
-) -> AnyElement {
-    v_flex()
-        .w(px(156.0))
-        .gap_1()
-        .p_2()
-        .border_1()
-        .child(cover_art(format!("{id}-c"), cover, 136.0, 190.0))
-        .child(div().text_size(px(13.0)).child(truncate(&title, 34)))
-        .child(div().text_size(px(11.0)).child(truncate(&subtitle, 40)))
-        .child(Progress::new(format!("{id}-p")).value(pct))
-        .child(actions)
-        .into_any_element()
-}
-
-fn wide_tile(
-    id: String,
-    cover: Option<String>,
-    title: String,
-    subtitle: String,
-    pct: f32,
-    actions: AnyElement,
-) -> AnyElement {
-    h_flex()
-        .w(px(340.0))
-        .gap_3()
-        .p_2()
-        .border_1()
-        .child(cover_art(format!("{id}-c"), cover, 72.0, 100.0))
-        .child(
-            v_flex()
-                .flex_1()
-                .gap_1()
-                .child(div().text_size(px(13.0)).child(truncate(&title, 40)))
-                .child(div().text_size(px(11.0)).child(truncate(&subtitle, 48)))
-                .child(Progress::new(format!("{id}-p")).value(pct))
-                .child(actions),
-        )
-        .into_any_element()
-}
-
-fn cycle_row(
-    label: &str,
-    value: &str,
-    id: &str,
-    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-) -> AnyElement {
-    h_flex()
-        .gap_3()
-        .items_center()
-        .child(
-            div()
-                .w(px(96.0))
-                .text_size(px(12.0))
-                .child(label.to_string()),
-        )
-        .child(
-            div()
-                .w(px(108.0))
-                .text_size(px(12.0))
-                .child(value.to_string()),
-        )
-        .child(
-            Button::new(format!("{id}-cycle"))
-                .ghost()
-                .label("Change")
-                .on_click(on_click),
-        )
-        .into_any_element()
-}
-
-fn setting_row(label: &str, value: String, minus: AnyElement, plus: AnyElement) -> AnyElement {
-    h_flex()
-        .gap_3()
-        .items_center()
-        .child(
-            div()
-                .w(px(96.0))
-                .text_size(px(12.0))
-                .child(label.to_string()),
-        )
-        .child(
-            h_flex()
-                .gap_1()
-                .items_center()
-                .child(minus)
-                .child(
-                    div()
-                        .w(px(64.0))
-                        .text_size(px(12.0))
-                        .text_align(TextAlign::Center)
-                        .child(value),
-                )
-                .child(plus),
-        )
-        .into_any_element()
-}
-
 impl Render for ReaderView {
     #[allow(refining_impl_trait)]
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -2335,9 +1998,23 @@ impl Render for ReaderView {
         if fg_in != self.custom_fg {
             self.custom_fg = fg_in;
         }
-        let (bg, fg) = self.theme_colors();
+        let palette = self.theme_palette();
+        let want_dark = is_dark_theme(&self.theme);
+        if self.synced_dark_mode != Some(want_dark) {
+            self.synced_dark_mode = Some(want_dark);
+            Theme::change(
+                if want_dark {
+                    ThemeMode::Dark
+                } else {
+                    ThemeMode::Light
+                },
+                Some(window),
+                cx,
+            );
+        }
+        let (bg, fg) = (palette.bg, palette.fg);
         if self.show_library {
-            return self.render_library(window, cx, bg, fg);
+            return self.render_library(window, cx, palette);
         }
 
         let status = if let Some(b) = &self.book {
@@ -2358,13 +2035,10 @@ impl Render for ReaderView {
                 parts.push(page);
             }
             let wpm = (self.state.wpm.max(100) as f32).max(100.0);
-            let mut sec_words = 0usize;
-            if let Ok(sec) = b.get_section(self.current) {
-                sec_words = sec.plain_text.split_whitespace().count();
-                if sec_words > 0 {
-                    let sec_mins = ((sec_words as f32 / wpm).ceil() as usize).max(1);
-                    parts.push(format!("{sec_words} words (~{sec_mins}m left)"));
-                }
+            let sec_words = self.cached_word_count;
+            if sec_words > 0 {
+                let sec_mins = ((sec_words as f32 / wpm).ceil() as usize).max(1);
+                parts.push(format!("{sec_words} words (~{sec_mins}m left)"));
             }
             let total_sections = b.sections().len();
             if total_sections > self.current + 1 && sec_words > 0 {
@@ -2390,31 +2064,17 @@ impl Render for ReaderView {
         let max_width = self.max_width;
         let line_height = self.line_height;
         let column_px = (max_width - 2.0 * margin).max(160.0);
-        let html = constrain_images(&self.html, column_px);
+        if (column_px - self.cached_column_px).abs() > 0.5 {
+            self.cached_column_px = column_px;
+            self.cached_constrained_html = constrain_images(&self.html, column_px);
+        }
+        let html = self.cached_constrained_html.clone();
         let pos = if let Some(b) = &self.book {
             format!("{}/{}", self.current + 1, b.sections().len())
         } else {
             String::new()
         };
-        let progress = if let Some(b) = &self.book {
-            if b.sections().is_empty() {
-                0.0
-            } else {
-                let cfi = b
-                    .to_readium_locator(self.current, 0)
-                    .ok()
-                    .and_then(|l| l.locations.cfi);
-                if let Some(cfi) = cfi
-                    && b.locations().total_locations > 0
-                {
-                    (b.locations().percentage_from_cfi(&cfi) * 100.0) as f32
-                } else {
-                    (self.current as f32 + 1.0) / b.sections().len() as f32 * 100.0
-                }
-            }
-        } else {
-            0.0
-        };
+        let progress = self.cached_progress;
 
         let on_open = cx.listener(|view, _ev, window, cx| {
             if let Some(path) = rfd::FileDialog::new()
@@ -2497,24 +2157,27 @@ impl Render for ReaderView {
                     v = v.child(Select::new(state));
                 }
                 if !self.toc_items.is_empty() {
-                    v = v.child(div().text_size(px(11.0)).child("Chapters:"));
+                    v = v.child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(palette.muted)
+                            .child("Chapters:"),
+                    );
                     let mut chapter_list = v_flex().gap_1();
-                    for (i, (label, idx)) in self.toc_items.iter().take(80).enumerate() {
+                    for (i, (label, idx)) in self.toc_items.iter().enumerate() {
                         let idx = *idx;
                         let is_active = idx == self.current;
-                        let text = if is_active {
-                            format!("▶ {}", label.trim())
+                        let btn =
+                            Button::new(format!("toc_ch_{i}")).label(truncate(label.trim(), 32));
+                        let btn = if is_active {
+                            btn.outline()
                         } else {
-                            label.clone()
+                            btn.ghost()
                         };
-                        chapter_list = chapter_list.child(
-                            Button::new(format!("toc_ch_{i}"))
-                                .ghost()
-                                .label(truncate(&text, 30))
-                                .on_click(cx.listener(move |view, _, _, cx| {
-                                    view.jump(idx, cx);
-                                })),
-                        );
+                        chapter_list =
+                            chapter_list.child(btn.on_click(cx.listener(move |view, _, _, cx| {
+                                view.jump(idx, cx);
+                            })));
                     }
                     v = v.child(chapter_list);
                 }
@@ -2570,18 +2233,17 @@ impl Render for ReaderView {
                             h_flex()
                                 .gap_1()
                                 .items_center()
-                                .child(
-                                    Button::new(format!("bmlink_{sec_idx}"))
-                                        .ghost()
-                                        .label(if is_current {
-                                            format!("▶ {label}")
-                                        } else {
-                                            label
-                                        })
-                                        .on_click(cx.listener(move |view, _, _, cx| {
-                                            view.jump(sec_idx, cx);
-                                        })),
-                                )
+                                .child({
+                                    let btn = Button::new(format!("bmlink_{sec_idx}")).label(label);
+                                    let btn = if is_current {
+                                        btn.outline()
+                                    } else {
+                                        btn.ghost()
+                                    };
+                                    btn.on_click(cx.listener(move |view, _, _, cx| {
+                                        view.jump(sec_idx, cx);
+                                    }))
+                                })
                                 .child(
                                     Button::new(format!("bmdel_{sec_idx}"))
                                         .ghost()
@@ -2874,47 +2536,17 @@ impl Render for ReaderView {
                 );
                 let on_wiki = cx.listener(|view, _ev, _w, cx| {
                     let word = view.dictionary_input.read(cx).value().to_string();
-                    let word = word.trim();
+                    let word = word.trim().to_string();
                     if word.is_empty() {
                         return;
                     }
                     view.dictionary_result = format!("Searching Wikipedia for “{}”...", word);
                     cx.notify();
-                    let query = word.replace(' ', "_");
+                    let bg = cx.background_executor().clone();
                     cx.spawn(async move |view, cx| {
-                        let url = format!(
-                            "https://en.wikipedia.org/api/rest_v1/page/summary/{}",
-                            query
-                        );
-                        let res = match ureq::get(&url)
-                            .header(
-                                "User-Agent",
-                                concat!(
-                                    "eParna-Reader/",
-                                    env!("CARGO_PKG_VERSION"),
-                                    " (https://github.com/SV-stark/eParna)"
-                                ),
-                            )
-                            .call()
-                        {
-                            Ok(resp) => {
-                                let body = resp.into_body().read_to_string().unwrap_or_default();
-                                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
-                                    if let Some(extract) =
-                                        json.get("extract").and_then(|v| v.as_str())
-                                    {
-                                        extract.to_string()
-                                    } else {
-                                        "No summary found on Wikipedia".into()
-                                    }
-                                } else {
-                                    "No summary found on Wikipedia".into()
-                                }
-                            }
-                            Err(_) => {
-                                "Wikipedia lookup failed (network error or page not found)".into()
-                            }
-                        };
+                        let res = bg
+                            .spawn(async move { fetch_wikipedia_summary(&word) })
+                            .await;
                         let _ = view.update(cx, |view, cx| {
                             view.dictionary_result = res;
                             cx.notify();
@@ -2924,47 +2556,15 @@ impl Render for ReaderView {
                 });
                 let on_translate = cx.listener(|view, _ev, _w, cx| {
                     let text = view.dictionary_input.read(cx).value().to_string();
-                    let text = text.trim();
+                    let text = text.trim().to_string();
                     if text.is_empty() {
                         return;
                     }
                     view.dictionary_result = format!("Translating “{}”...", text);
                     cx.notify();
-                    let encoded = url_encode(text);
+                    let bg = cx.background_executor().clone();
                     cx.spawn(async move |view, cx| {
-                        let url = format!(
-                            "https://api.mymemory.translated.net/get?q={}&langpair=autodetect|en",
-                            encoded
-                        );
-                        let res = match ureq::get(&url)
-                            .header(
-                                "User-Agent",
-                                concat!(
-                                    "eParna-Reader/",
-                                    env!("CARGO_PKG_VERSION"),
-                                    " (https://github.com/SV-stark/eParna)"
-                                ),
-                            )
-                            .call()
-                        {
-                            Ok(resp) => {
-                                let body = resp.into_body().read_to_string().unwrap_or_default();
-                                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
-                                    if let Some(trans) = json
-                                        .get("responseData")
-                                        .and_then(|d| d.get("translatedText"))
-                                        .and_then(|t| t.as_str())
-                                    {
-                                        format!("Translation (en):\n{}", trans)
-                                    } else {
-                                        "Could not parse translation response".into()
-                                    }
-                                } else {
-                                    "Invalid translation response".into()
-                                }
-                            }
-                            Err(e) => format!("Translation failed: {e}"),
-                        };
+                        let res = bg.spawn(async move { fetch_translation(&text) }).await;
                         let _ = view.update(cx, |view, cx| {
                             view.dictionary_result = res;
                             cx.notify();
@@ -2992,102 +2592,126 @@ impl Render for ReaderView {
             }
         };
 
+        let sb_tab = |id: &str, label: &str, mode: SidebarMode, active: SidebarMode| {
+            let b = Button::new(id.to_string()).label(label.to_string());
+            let b = if active == mode {
+                b.outline()
+            } else {
+                b.ghost()
+            };
+            b.on_click(cx.listener(move |view, _, _, cx| {
+                view.sidebar_mode = mode;
+                cx.notify();
+            }))
+        };
+
         let sidebar_buttons = h_flex()
             .gap_1()
             .p_2()
             .flex_wrap()
+            .items_center()
+            .border_b_1()
+            .border_color(palette.border)
+            .child(sb_tab(
+                "sb_contents",
+                "Contents",
+                SidebarMode::Contents,
+                self.sidebar_mode,
+            ))
+            .child(sb_tab(
+                "sb_bm",
+                "Bookmarks",
+                SidebarMode::Bookmarks,
+                self.sidebar_mode,
+            ))
+            .child(sb_tab(
+                "sb_ann",
+                "Notes",
+                SidebarMode::Annotations,
+                self.sidebar_mode,
+            ))
+            .child(sb_tab(
+                "sb_search",
+                "Search",
+                SidebarMode::Search,
+                self.sidebar_mode,
+            ))
+            .child(sb_tab(
+                "sb_fn",
+                "Footnotes",
+                SidebarMode::Footnotes,
+                self.sidebar_mode,
+            ))
+            .child(sb_tab(
+                "sb_dict",
+                "Dictionary",
+                SidebarMode::Dictionary,
+                self.sidebar_mode,
+            ))
             .child(
-                Button::new("sb_contents")
+                Button::new("sb-narrow")
                     .ghost()
-                    .label("Contents")
-                    .w(px(110.0))
+                    .label("−")
+                    .tooltip("Narrow sidebar")
                     .on_click(cx.listener(|view, _, _, cx| {
-                        view.sidebar_mode = SidebarMode::Contents;
+                        view.sidebar_width = (view.sidebar_width - 24.0).max(180.0);
                         cx.notify();
                     })),
             )
             .child(
-                Button::new("sb_bm")
+                Button::new("sb-wide")
                     .ghost()
-                    .label("Bookmarks")
-                    .w(px(110.0))
+                    .label("+")
+                    .tooltip("Widen sidebar")
                     .on_click(cx.listener(|view, _, _, cx| {
-                        view.sidebar_mode = SidebarMode::Bookmarks;
-                        cx.notify();
-                    })),
-            )
-            .child(
-                Button::new("sb_ann")
-                    .ghost()
-                    .label("Notes")
-                    .w(px(110.0))
-                    .on_click(cx.listener(|view, _, _, cx| {
-                        view.sidebar_mode = SidebarMode::Annotations;
-                        cx.notify();
-                    })),
-            )
-            .child(
-                Button::new("sb_search")
-                    .ghost()
-                    .label("Search")
-                    .w(px(110.0))
-                    .on_click(cx.listener(|view, _, _, cx| {
-                        view.sidebar_mode = SidebarMode::Search;
-                        cx.notify();
-                    })),
-            )
-            .child(
-                Button::new("sb_fn")
-                    .ghost()
-                    .label("Footnotes")
-                    .w(px(110.0))
-                    .on_click(cx.listener(|view, _, _, cx| {
-                        view.sidebar_mode = SidebarMode::Footnotes;
-                        cx.notify();
-                    })),
-            )
-            .child(
-                Button::new("sb_dict")
-                    .ghost()
-                    .label("Dictionary")
-                    .w(px(110.0))
-                    .on_click(cx.listener(|view, _, _, cx| {
-                        view.sidebar_mode = SidebarMode::Dictionary;
+                        view.sidebar_width = (view.sidebar_width + 24.0).min(440.0);
                         cx.notify();
                     })),
             );
 
         let is_bm = self.bookmarks.contains(&self.current);
-        let bm_label = if is_bm {
-            "★ Bookmarked"
-        } else {
-            "☆ Bookmark"
-        };
-        let back_btn = if let Some(last_sec) = self.nav_history.last() {
-            let last_sec = *last_sec;
-            Some(
-                Button::new("jump_back")
-                    .ghost()
-                    .label(format!("⤺ Sec {}", last_sec + 1))
-                    .on_click(cx.listener(|v, _, _, cx| v.jump_back(cx)))
-                    .into_any_element(),
-            )
-        } else {
-            None
-        };
+        let bm_label = if is_bm { "★" } else { "☆" };
+        let back_btn = self.nav_history.last().map(|&last_sec| {
+            Button::new("jump_back")
+                .ghost()
+                .label(format!("⤺ Sec {}", last_sec + 1))
+                .tooltip("Jump back (Alt+← / Backspace)")
+                .on_click(cx.listener(|v, _, _, cx| v.jump_back(cx)))
+                .into_any_element()
+        });
 
         let mut left_controls = h_flex()
-            .flex_grow(1.0)
             .gap_2()
             .items_center()
-            .child(Button::new("open").label("Open").on_click(on_open))
-            .child(Button::new("library").label("Library").on_click(on_lib));
+            .child(
+                Button::new("library")
+                    .ghost()
+                    .label("Library")
+                    .tooltip("Back to library (Ctrl+L)")
+                    .on_click(on_lib),
+            )
+            .child(
+                Button::new("open")
+                    .outline()
+                    .label("Open")
+                    .tooltip("Open ebook (Ctrl+O)")
+                    .on_click(on_open),
+            );
 
         if let Some(btn) = back_btn {
             left_controls = left_controls.child(btn);
         }
 
-        left_controls = left_controls
+        let header_title = self
+            .book
+            .as_ref()
+            .map(|b| truncate(&b.metadata().title, 36))
+            .unwrap_or_default();
+
+        let right_controls = h_flex()
+            .gap_1()
+            .items_center()
+            .flex_wrap()
             .child(
                 Button::new("prev")
                     .ghost()
@@ -3096,7 +2720,15 @@ impl Render for ReaderView {
                     } else {
                         "\u{2039}"
                     })
+                    .tooltip("Previous section (←)")
                     .on_click(on_prev),
+            )
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(palette.muted)
+                    .px_1()
+                    .child(format!("{pos} ({progress:.0}%)")),
             )
             .child(
                 Button::new("next")
@@ -3106,84 +2738,109 @@ impl Render for ReaderView {
                     } else {
                         "\u{203a}"
                     })
+                    .tooltip("Next section (→)")
                     .on_click(on_next),
             )
-            .child(Button::new("bm").label(bm_label).on_click(on_bm))
+            .child(
+                Button::new("bm")
+                    .ghost()
+                    .label(bm_label)
+                    .tooltip("Toggle bookmark (Ctrl+B)")
+                    .on_click(on_bm),
+            )
             .child(
                 Button::new("highlight")
+                    .outline()
                     .label("Highlight")
+                    .tooltip("Highlight selected text")
                     .on_click(on_highlight),
             )
             .child(
                 Button::new("hl-col")
                     .ghost()
                     .label(format!("[{}]", self.highlight_color))
+                    .tooltip("Cycle highlight color")
                     .on_click(cx.listener(|v, _, _, cx| v.cycle_highlight_color(cx))),
             )
-            .child(Button::new("copy").label("Copy").on_click(on_copy))
+            .child(
+                Button::new("copy")
+                    .ghost()
+                    .label("Copy")
+                    .tooltip("Copy selection (Ctrl+C)")
+                    .on_click(on_copy),
+            )
             .child(
                 Button::new("find-btn")
                     .ghost()
                     .label("Find")
+                    .tooltip("Find in book (Ctrl+F)")
                     .on_click(cx.listener(|v, _, _, cx| {
                         v.show_find_bar = !v.show_find_bar;
                         cx.notify();
                     })),
+            )
+            .child(
+                Button::new("zen-hdr")
+                    .ghost()
+                    .label("Zen")
+                    .tooltip("Distraction-free mode (Z)")
+                    .on_click(cx.listener(|view, _, _, cx| view.toggle_zen_mode(cx))),
+            )
+            .child(
+                Button::new("aa")
+                    .ghost()
+                    .label("Aa")
+                    .tooltip("Typography & theme (P)")
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        view.panel = if view.panel == Panel::Typography {
+                            Panel::None
+                        } else {
+                            Panel::Typography
+                        };
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Button::new("more")
+                    .ghost()
+                    .label("\u{22ef}")
+                    .tooltip("More actions")
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        view.panel = if view.panel == Panel::Actions {
+                            Panel::None
+                        } else {
+                            Panel::Actions
+                        };
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Button::new("shortcuts-btn")
+                    .ghost()
+                    .label("?")
+                    .tooltip("Keyboard shortcuts (?)")
+                    .on_click(cx.listener(|view, _, _, cx| view.show_shortcuts_modal(cx))),
             );
 
         let header = h_flex()
             .w_full()
+            .justify_between()
             .items_center()
             .gap_2()
-            .px_2()
+            .px_3()
             .py_2()
+            .bg(palette.surface)
             .border_b_1()
+            .border_color(palette.border)
             .child(left_controls)
             .child(
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .child(format!("{}  ({:.0}%)", pos, progress)),
-                    )
-                    .child(
-                        Button::new("zen-hdr")
-                            .ghost()
-                            .label("Zen")
-                            .on_click(cx.listener(|view, _, _, cx| view.toggle_zen_mode(cx))),
-                    )
-                    .child(Button::new("aa").ghost().label("Aa").on_click(cx.listener(
-                        |view, _, _, cx| {
-                            view.panel = if view.panel == Panel::Typography {
-                                Panel::None
-                            } else {
-                                Panel::Typography
-                            };
-                            cx.notify();
-                        },
-                    )))
-                    .child(
-                        Button::new("more")
-                            .ghost()
-                            .label("\u{22ef}")
-                            .on_click(cx.listener(|view, _, _, cx| {
-                                view.panel = if view.panel == Panel::Actions {
-                                    Panel::None
-                                } else {
-                                    Panel::Actions
-                                };
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        Button::new("shortcuts-btn")
-                            .ghost()
-                            .label("?")
-                            .on_click(cx.listener(|view, _, _, cx| view.show_shortcuts_modal(cx))),
-                    ),
-            );
+                div()
+                    .text_size(px(13.0))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(palette.muted)
+                    .child(header_title),
+            )
+            .child(right_controls);
 
         let mut typography_panel = h_flex()
             .w_full()
@@ -3574,24 +3231,32 @@ impl Render for ReaderView {
                 .child(page("content".to_string(), html.clone()))
         };
 
+        let sidebar_w = self.sidebar_width;
         let sidebar_panel = div()
-            .w(px(260.0))
-            .min_w(px(0.0))
-            .max_w(px(260.0))
+            .w(px(sidebar_w))
+            .min_w(px(sidebar_w))
+            .max_w(px(sidebar_w))
             .flex_shrink(0.0)
             .h_full()
+            .border_r_1()
+            .border_color(palette.border)
+            .bg(palette.surface)
             .overflow_hidden()
             .child(
-                v_flex()
-                    .size_full()
-                    .child(sidebar_buttons)
-                    .child(div().flex_1().overflow_hidden().child(sidebar)),
+                v_flex().size_full().child(sidebar_buttons).child(
+                    div()
+                        .id("sidebar-scroll")
+                        .flex_1()
+                        .overflow_y_scrollbar()
+                        .child(sidebar),
+                ),
             );
 
         let body = if self.zen_mode {
-            h_flex().size_full().min_w(px(0.0)).child(content)
+            h_flex().flex_1().size_full().min_w(px(0.0)).child(content)
         } else {
             h_flex()
+                .flex_1()
                 .size_full()
                 .min_w(px(0.0))
                 .child(sidebar_panel)
@@ -3604,16 +3269,18 @@ impl Render for ReaderView {
             let alt = event.keystroke.modifiers.alt;
 
             if key == "escape" {
-                if view.zen_mode {
-                    view.zen_mode = false;
-                    cx.notify();
+                if view.passphrase_modal {
+                    view.cancel_passphrase(cx);
+                } else if view.modal.is_some() {
+                    view.close_modal(cx);
                 } else if view.show_find_bar {
                     view.show_find_bar = false;
                     view.active_search_query.clear();
                     view.load_current(cx);
                     cx.notify();
-                } else if view.modal.is_some() {
-                    view.close_modal(cx);
+                } else if view.zen_mode {
+                    view.zen_mode = false;
+                    cx.notify();
                 } else if view.panel != Panel::None {
                     view.panel = Panel::None;
                     cx.notify();
@@ -3719,113 +3386,167 @@ impl Render for ReaderView {
             }
         });
 
-        let body = if let Some(m) = &self.modal {
-            v_flex()
-                .flex_1()
-                .size_full()
-                .items_center()
-                .justify_center()
-                .p_6()
-                .child(
-                    v_flex()
-                        .w(px(720.0))
-                        .max_h(px(560.0))
-                        .gap_3()
-                        .border_1()
-                        .p_4()
-                        .child(div().text_size(px(16.0)).child(m.title.clone()))
-                        .child(if let Some(src) = &m.image {
-                            div()
-                                .flex_1()
-                                .max_h(px(440.0))
-                                .child(
-                                    TextView::html(
-                                        "modal-image",
-                                        format!("<img src='{}' style='max-width:100%' />", src),
+        let overlay: Option<AnyElement> = if let Some(m) = &self.modal {
+            Some(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .bg(rgba(0x00000088))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .p_6()
+                    .child(
+                        v_flex()
+                            .w(px(720.0))
+                            .max_h(px(560.0))
+                            .gap_3()
+                            .rounded_lg()
+                            .bg(palette.bg)
+                            .text_color(palette.fg)
+                            .border_1()
+                            .border_color(palette.border)
+                            .p_4()
+                            .child(
+                                h_flex()
+                                    .justify_between()
+                                    .items_center()
+                                    .child(
+                                        div()
+                                            .text_size(px(16.0))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .child(m.title.clone()),
                                     )
-                                    .scrollable(true),
-                                )
-                                .into_any_element()
-                        } else {
-                            div()
-                                .flex_1()
-                                .max_h(px(440.0))
-                                .text_size(px(13.0))
-                                .child(
-                                    TextView::html("modal-body", escape_html(&m.body))
+                                    .child(
+                                        Button::new("modal-x")
+                                            .ghost()
+                                            .label("\u{2715}")
+                                            .tooltip("Close (Esc)")
+                                            .on_click(cx.listener(|v, _, _, cx| v.close_modal(cx))),
+                                    ),
+                            )
+                            .child(if let Some(src) = &m.image {
+                                div()
+                                    .flex_1()
+                                    .max_h(px(440.0))
+                                    .child(
+                                        TextView::html(
+                                            "modal-image",
+                                            format!("<img src='{}' style='max-width:100%' />", src),
+                                        )
                                         .scrollable(true),
-                                )
-                                .into_any_element()
-                        })
-                        .child(
-                            h_flex().justify_end().child(
-                                Button::new("modal-close")
-                                    .label("Close")
-                                    .on_click(cx.listener(|v, _, _, cx| v.close_modal(cx))),
-                            ),
-                        ),
-                )
-        } else if self.passphrase_modal {
-            v_flex()
-                .flex_1()
-                .size_full()
-                .items_center()
-                .justify_center()
-                .p_6()
-                .child(
-                    v_flex()
-                        .w(px(420.0))
-                        .gap_3()
-                        .border_1()
-                        .p_4()
-                        .child(div().text_size(px(16.0)).child("Passphrase required"))
-                        .child(
-                            div()
-                                .text_size(px(13.0))
-                                .child(self.passphrase_error.clone()),
-                        )
-                        .child(Input::new(&self.passphrase_input))
-                        .child(
-                            h_flex().justify_end().gap_2().children([
-                                Button::new("pp-cancel")
-                                    .label("Cancel")
-                                    .on_click(cx.listener(|v, _, _, cx| v.cancel_passphrase(cx))),
-                                Button::new("pp-submit").label("Open").on_click(
-                                    cx.listener(|v, _, window, cx| v.submit_passphrase(window, cx)),
+                                    )
+                                    .into_any_element()
+                            } else {
+                                div()
+                                    .flex_1()
+                                    .max_h(px(440.0))
+                                    .text_size(px(13.0))
+                                    .child(
+                                        TextView::html("modal-body", escape_html(&m.body))
+                                            .scrollable(true),
+                                    )
+                                    .into_any_element()
+                            })
+                            .child(
+                                h_flex().justify_end().child(
+                                    Button::new("modal-close")
+                                        .primary()
+                                        .label("Close")
+                                        .on_click(cx.listener(|v, _, _, cx| v.close_modal(cx))),
                                 ),
-                            ]),
-                        ),
-                )
+                            ),
+                    )
+                    .into_any_element(),
+            )
+        } else if self.passphrase_modal {
+            Some(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .bg(rgba(0x00000088))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .p_6()
+                    .child(
+                        v_flex()
+                            .w(px(420.0))
+                            .gap_3()
+                            .rounded_lg()
+                            .bg(palette.bg)
+                            .text_color(palette.fg)
+                            .border_1()
+                            .border_color(palette.border)
+                            .p_4()
+                            .child(
+                                div()
+                                    .text_size(px(16.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child("Passphrase required"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(13.0))
+                                    .text_color(palette.muted)
+                                    .child(self.passphrase_error.clone()),
+                            )
+                            .child(Input::new(&self.passphrase_input))
+                            .child(h_flex().justify_end().gap_2().children(
+                                [
+                                    Button::new("pp-cancel").ghost().label("Cancel").on_click(
+                                        cx.listener(|v, _, _, cx| v.cancel_passphrase(cx)),
+                                    ),
+                                    Button::new("pp-submit").primary().label("Open").on_click(
+                                        cx.listener(|v, _, window, cx| {
+                                            v.submit_passphrase(window, cx)
+                                        }),
+                                    ),
+                                ],
+                            )),
+                    )
+                    .into_any_element(),
+            )
         } else {
-            body
+            None
         };
 
-        let root = if self.zen_mode && self.modal.is_none() && !self.passphrase_modal {
+        let status_line = if self.selection_status.is_empty() {
+            status
+        } else {
+            format!("{} — {}", status, self.selection_status)
+        };
+
+        let mut root = if self.zen_mode && self.modal.is_none() && !self.passphrase_modal {
             v_flex()
+                .relative()
                 .size_full()
                 .min_w(px(0.0))
                 .overflow_hidden()
                 .bg(bg)
                 .text_color(fg)
                 .on_key_down(on_key)
-                .child(
-                    h_flex()
-                        .w_full()
-                        .justify_between()
-                        .items_center()
-                        .px_4()
-                        .py_1()
-                        .child(div().text_size(px(11.0)).child(format!("{:.0}%", progress)))
-                        .child(
-                            Button::new("exit-zen")
-                                .ghost()
-                                .label("Exit Zen (Esc / Z)")
-                                .on_click(cx.listener(|v, _, _, cx| v.toggle_zen_mode(cx))),
-                        ),
-                )
                 .child(div().flex_1().size_full().overflow_hidden().child(body))
+                .child(
+                    div().absolute().top_2().right_3().child(
+                        Button::new("exit-zen")
+                            .ghost()
+                            .label("Exit Zen (Esc)")
+                            .on_click(cx.listener(|v, _, _, cx| v.toggle_zen_mode(cx))),
+                    ),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .bottom_2()
+                        .right_4()
+                        .text_size(px(11.0))
+                        .text_color(palette.muted)
+                        .child(format!("{progress:.0}%")),
+                )
         } else {
             v_flex()
+                .relative()
                 .size_full()
                 .min_w(px(0.0))
                 .overflow_hidden()
@@ -3835,16 +3556,29 @@ impl Render for ReaderView {
                 .child(header)
                 .child(secondary)
                 .child(find_bar)
-                .child(div().px_2().child(Progress::new("prog").value(progress)))
-                .child(div().px_2().text_size(px(12.0)).child(
-                    if self.selection_status.is_empty() {
-                        status.clone()
-                    } else {
-                        format!("{} — {}", status, self.selection_status)
-                    },
-                ))
                 .child(body)
+                .child(
+                    v_flex()
+                        .w_full()
+                        .bg(palette.surface)
+                        .border_t_1()
+                        .border_color(palette.border)
+                        .px_3()
+                        .py_1()
+                        .gap_1()
+                        .child(Progress::new("prog").value(progress))
+                        .child(
+                            div()
+                                .text_size(px(11.0))
+                                .text_color(palette.muted)
+                                .child(status_line),
+                        ),
+                )
         };
+
+        if let Some(ov) = overlay {
+            root = root.child(ov);
+        }
 
         root.into_any_element()
     }

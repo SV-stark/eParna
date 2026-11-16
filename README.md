@@ -1,4 +1,8 @@
-# eParna Reader
+<p align="center">
+  <img src="assets/icons/128x128.png" width="128" height="128" alt="eParna Reader logo" />
+</p>
+
+<h1 align="center">eParna Reader</h1>
 
 A fast, lightweight, cross-platform desktop ebook reader written in pure Rust.
 
@@ -80,7 +84,7 @@ Prebuilt artifacts are attached to every [GitHub Release](https://github.com/SV-
 | Windows x64 | `eparna-x86_64-pc-windows-msvc.zip` | Portable build, no install needed |
 | macOS (Apple Silicon) | `eparna-aarch64-apple-darwin.pkg` | Double-click installer |
 | macOS (Intel) | `eparna-x86_64-apple-darwin.pkg` | Double-click installer |
-| Linux x64 | `eparna_0.8.0_x86_64.AppImage` | Single file; `chmod +x` and run |
+| Linux x64 | `eparna_0.8.1_x86_64.AppImage` | Single file; `chmod +x` and run |
 | Any | `eparna-installer.sh` / `eparna-installer.ps1` | `curl \| sh` / `irm \| iex` |
 
 Or install with the one-liner scripts:

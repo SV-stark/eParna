@@ -149,7 +149,7 @@ pub fn prepare_section_html(
     theme: &str,
     justify: bool,
 ) -> String {
-    let body = strip_element(&strip_element(html, "head"), "title");
+    let body = strip_element(html, "head");
     let mut body = inline_svg_images(&body, book, section_path);
     body = make_images_clickable(&body);
 

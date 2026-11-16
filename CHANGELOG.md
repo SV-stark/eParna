@@ -6,6 +6,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-11-16
+
+### Added
+- **Expanded Unit Test Suite**: Added unit tests covering atomic state persistence, legacy `ePustak` migration, corrupt-state backup (`src/config.rs`), `Annotation`/`PersistedState` deserialization (`src/models.rs`), URL encoding and JSON dictionary parsing (`src/network.rs`), folder-scan deduplication and library helpers (`src/library.rs`), and Markdown annotation export (`src/export.rs`).
+- **Refreshed Application Logo**: Replaced the app icon suite (`assets/icon.ico`, `assets/icons/icon.ico`, `wix/Product.ico`, and `assets/icons/*.png` from `16x16` to `512x512`) with a modernized layered-vector squircle design depicting an open book whose spine flows into a luminous teal leaf with a gold vein.
+- **In-App & README Branding**: Embedded the new icon in the Library view header (`src/main.rs`) and at the top of `README.md`.
+
+### Changed & Improved
+- **Theme-Synced Palette & Visual Hierarchy**: Extended `src/ui_helpers.rs` with `ThemePalette` (`bg`, `fg`, `surface`, `border`, `muted`) across all 8 reading themes and synced `gpui_kit::component::theme::ThemeMode` (`Light` / `Dark`) so toolbars, sidebars, cards, and inputs stay visually cohesive.
+- **Redesigned Reader Chrome & Bottom Status Bar**: Grouped the reader header into Left (`Library`, `Open`, `⤺ Back`), Center (book title), and Right (navigation, bookmark, highlight, `Find`, `Zen`, `Aa`, `⋯`, `?`) with tooltips, and moved the reading progress bar and statistics to a quiet bottom status bar.
+- **Library Screen Polish**: Replaced `"● ..."` text prefixes with active/inactive shelf button variants, removed the duplicate `Favorites` header toggle, added a scrollable library body with an empty-state action card, and replaced missing-cover emoji placeholders with typographic cover cards showing title and format.
+- **True Modal Overlays & Scrollable, Resizable Sidebar**: Rendered info/citation/validation/lightbox and passphrase modals as centered dimmed-backdrop overlays with `Escape`-first dismissal; added scrollable sidebar tabs, `−`/`+` sidebar width controls (`180–440px`), full untruncated TOC chapter lists, and outline-highlighted active items.
+- **Zen Mode Polish**: Replaced the persistent Zen header bar with a floating top-right `Exit Zen (Esc)` button and a subtle bottom-right progress percentage indicator.
+- **Non-Blocking Networking & Folder Scanning**: Moved all `ureq` HTTP calls (dictionary lookup, Wikipedia summary, translation, OPDS feed fetch, and OPDS book download) and recursive `scan_folder` library indexing off the UI thread onto GPUI's `background_executor`; wired OPDS book downloads to open the downloaded book automatically.
+- **Per-Frame Render Caching**: Cached section word count, Readium CFI progress percentage, and column-constrained HTML in `ReaderView` so `render()` no longer re-parses sections or re-scans HTML on every frame.
+- **Modularized Architecture**: Extracted `src/network.rs`, `src/library.rs`, `src/export.rs`, and `src/ui_helpers.rs` from `src/main.rs` for cleaner separation of concerns.
+- **Atomic State Persistence & Safe Recovery**: Updated `save_state_to` (`src/config.rs`) to write via a temporary file and atomic rename, and updated `load_state_from` to back up unparseable `state.json` files to `state.json.corrupt` instead of silently discarding them.
+- **Dictionary & Scan Fixes**: Switched dictionary API queries (`src/network.rs`) to URL-encoded lookups with `serde_json` parsing (preserving part-of-speech labels and escaped quotes), and added content-hash deduplication to `scan_folder` (`src/library.rs`).
+- **Upgraded `gpui-kit` to `v0.10.0`** (with the `gpui-fast` backend feature).
+- **Upgraded `ebook-rs` to `v0.18.5`** (from `v0.18.0`):
+  - Switched `open_file_inner`, `save_as_epub`, and `save_as_kfx` to structured `ebook_rs::EbookError` handling, matching `EbookError::DrmProtected` directly for LCP passphrase prompts and surfacing open-failure notifications.
+  - Updated `book.media_overlays` field access to `book.media_overlays()` for encapsulated `Book` fields.
+  - Removed redundant `<title>` stripping in `prepare_section_html` (`src/html_utils.rs`).
+  - Gains upstream full-fidelity KFX reading/export (`CONT` v2 / `ENTY` v1), EPUB 3 export conformance fixes, PDF indirect `/Kids` page-tree resolution, and bounded FIFO lazy-hydration caching.
+
 ## [0.8.0] - 2026-11-03
 
 ### Changed & Architecture

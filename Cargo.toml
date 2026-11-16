@@ -1,6 +1,6 @@
 [package]
 name = "eparna"
-version = "0.8.0"
+version = "0.8.1"
 edition = "2024"
 # Minimum supported Rust version. Edition 2024 requires Rust 1.85 or newer,
 # ebook-rs 0.18.0 requires Rust 1.88, and the locked dependency graph
@@ -45,8 +45,8 @@ icon = [
 ]
 
 [dependencies]
-gpui-kit = { version = "0.9.0", features = ["gpui-fast"] }
-ebook-rs = { version = "0.18.0", default-features = false, features = [
+gpui-kit = { version = "0.10.0", features = ["gpui-fast"] }
+ebook-rs = { version = "0.18.5", default-features = false, features = [
     "serde",
     "opds",
     "pdf",
