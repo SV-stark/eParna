@@ -169,14 +169,89 @@ p { margin: 0 0 14px; }
 
 /* ---------- Hero ---------- */
 .hero { padding: 70px 0 8px; }
+.hero-top { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 22px; }
 .hero-label {
   display: inline-block; color: var(--accent); font-weight: 650;
   font-size: .82rem; letter-spacing: .08em; text-transform: uppercase;
   background: var(--accent-soft); border: 1px solid var(--border);
-  padding: 5px 12px; border-radius: 999px; margin-bottom: 22px;
+  padding: 5px 12px; border-radius: 999px; margin: 0;
 }
+.ver-pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: .8rem; font-weight: 650; color: var(--green);
+  background: var(--green-soft); border: 1px solid var(--border);
+  padding: 5px 11px; border-radius: 999px;
+}
+.ver-pill:hover { text-decoration: none; border-color: var(--green); }
+.hero-brand { display: flex; align-items: center; gap: 18px; margin-bottom: 18px; }
+.hero-logo {
+  width: 64px; height: 64px; border-radius: 16px; flex: none;
+  box-shadow: var(--shadow);
+}
+.hero h1 { margin: 0; }
 .hero h1 code { font-size: .92em; }
 .hero .lead strong { color: var(--text-strong); }
+
+/* ---------- Direct downloads ---------- */
+.dl-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 14px; max-width: 720px; }
+.dl-pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: .84rem; font-weight: 600; color: var(--text);
+  background: var(--bg-elev); border: 1px solid var(--border);
+  padding: 6px 12px; border-radius: 8px;
+}
+.dl-pill:hover { border-color: var(--accent); color: var(--accent); text-decoration: none; }
+
+/* ---------- Interactive reader preview ---------- */
+.preview-wrap { margin-top: 34px; max-width: 820px; }
+.preview-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  flex-wrap: wrap; margin-bottom: 10px;
+}
+.preview-caption { font-size: .82rem; color: var(--muted); font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+.preview-themes { display: flex; flex-wrap: wrap; gap: 6px; }
+.ptheme {
+  appearance: none; border: 1px solid var(--border); background: var(--bg-elev);
+  color: var(--muted); font: inherit; font-size: 12px; font-weight: 600;
+  padding: 4px 10px; border-radius: 999px; cursor: pointer;
+}
+.ptheme[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.preview-shell {
+  border: 1px solid var(--border); border-radius: 14px; overflow: hidden;
+  box-shadow: var(--shadow); background: var(--pv-bg, var(--bg-elev));
+  color: var(--pv-fg, var(--text)); transition: background .2s ease, color .2s ease;
+}
+.pv-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 9px 14px; border-bottom: 1px solid var(--pv-border, var(--border));
+  background: var(--pv-surface, var(--bg-inset)); font-size: 12px;
+}
+.pv-dots { display: flex; gap: 6px; }
+.pv-dots i { width: 9px; height: 9px; border-radius: 50%; background: var(--pv-border, var(--border)); display: block; }
+.pv-title { font-weight: 650; opacity: .9; }
+.pv-body { display: grid; grid-template-columns: 210px 1fr; min-height: 220px; }
+.pv-toc {
+  border-right: 1px solid var(--pv-border, var(--border));
+  background: var(--pv-surface, var(--bg-inset));
+  padding: 12px; font-size: 12px; line-height: 1.55;
+}
+.pv-toc-h { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; opacity: .65; margin-bottom: 8px; }
+.pv-toc-item { padding: 3px 7px; border-radius: 6px; opacity: .82; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pv-toc-item.sub { padding-left: 18px; font-size: 11.5px; opacity: .7; }
+.pv-toc-item.active { outline: 1px solid var(--accent); opacity: 1; font-weight: 600; }
+.pv-page { padding: 20px 26px; font-family: Georgia, "Times New Roman", serif; }
+.pv-page h4 { margin: 0 0 8px; font-size: 16px; }
+.pv-page p { margin: 0 0 10px; font-size: 13.5px; line-height: 1.65; opacity: .92; }
+.pv-page mark { background: rgba(250, 204, 21, .28); color: inherit; padding: 0 3px; border-radius: 3px; }
+.pv-foot {
+  padding: 7px 14px; border-top: 1px solid var(--pv-border, var(--border));
+  background: var(--pv-surface, var(--bg-inset)); font-size: 11px; opacity: .75;
+  display: flex; justify-content: space-between;
+}
+@media (max-width: 640px) {
+  .pv-body { grid-template-columns: 1fr; }
+  .pv-toc { display: none; }
+}
 
 /* ---------- Install box ---------- */
 .install {
@@ -330,8 +405,14 @@ footer p { margin: 0 0 8px; }
 
 <main id="top">
   <div class="hero">
-    <p class="hero-label">A lightweight ebook reader · written in pure Rust</p>
-    <h1>One quiet place for <em>every</em> book you own.</h1>
+    <div class="hero-top">
+      <p class="hero-label">A lightweight ebook reader · written in pure Rust</p>
+      <a class="ver-pill" id="ver-pill" href="https://github.com/SV-stark/eParna/releases/latest">Latest: v0.8.2</a>
+    </div>
+    <div class="hero-brand">
+      <img class="hero-logo" src="./assets/icon.png" alt="eParna logo">
+      <h1>One quiet place for <em>every</em> book you own.</h1>
+    </div>
     <p class="lead">
       <strong>eParna</strong> is a fast, lightweight, cross-platform ebook reader. The name comes
       from Sanskrit <em>पर्ण (parṇa)</em> — <em>leaf</em>. A page is a leaf, so eParna is an
@@ -359,11 +440,17 @@ footer p { margin: 0 0 8px; }
       </div>
     </div>
     <p class="sr-only" role="status" id="copy-status"></p>
+    <div class="dl-row" aria-label="Direct downloads">
+      <a class="dl-pill" id="dl-msi" href="https://github.com/SV-stark/eParna/releases/latest">Windows (.msi)</a>
+      <a class="dl-pill" id="dl-mac" href="https://github.com/SV-stark/eParna/releases/latest">macOS (.pkg)</a>
+      <a class="dl-pill" id="dl-lin" href="https://github.com/SV-stark/eParna/releases/latest">Linux (AppImage)</a>
+      <a class="dl-pill" href="https://github.com/SV-stark/eParna/releases">All releases &amp; checksums →</a>
+    </div>
     <p class="install-note">
       Prebuilt installers are attached to every <a href="https://github.com/SV-stark/eParna/releases">GitHub Release</a>:
-      an MSI and portable ZIP for Windows, PKG installers for macOS (Apple Silicon &amp; Intel), a single-file
-      AppImage for Linux, and a <code>.tar.xz</code> for minimal systems. Every artifact ships with a
-      <code>.sha256</code> sidecar, so downloads can be verified.
+      a Windows MSI (with Start Menu shortcut, embedded icon, and <strong>Open with</strong> registration for supported formats) plus portable ZIP, macOS PKG installers (Apple Silicon &amp; Intel), a single-file
+      Linux AppImage, and a <code>.tar.xz</code> for minimal systems. Every artifact ships with a
+      <code>.sha256</code> sidecar.
     </p>
     <p class="install-note">
       Requires Rust 1.90+ to build from source (edition 2024). The release binary at
@@ -373,10 +460,51 @@ footer p { margin: 0 0 8px; }
     <aside class="cta">
       <p>Reading should be simple. Give it a try.</p>
       <div class="cta-buttons">
-        <a class="cta-button" href="https://github.com/SV-stark/eParna/releases">Download eParna</a>
+        <a class="cta-button" href="https://github.com/SV-stark/eParna/releases/latest">Download eParna</a>
         <a class="cta-button ghost" href="https://github.com/SV-stark/eParna">★ Star on GitHub</a>
       </div>
     </aside>
+
+    <div class="preview-wrap">
+      <div class="preview-bar">
+        <span class="preview-caption">Reader preview</span>
+        <div class="preview-themes" role="group" aria-label="Preview reading theme">
+          <button class="ptheme" type="button" data-pv="dark" aria-pressed="true">Dark</button>
+          <button class="ptheme" type="button" data-pv="oled" aria-pressed="false">OLED</button>
+          <button class="ptheme" type="button" data-pv="sepia" aria-pressed="false">Sepia</button>
+          <button class="ptheme" type="button" data-pv="nord" aria-pressed="false">Nord</button>
+          <button class="ptheme" type="button" data-pv="solarized" aria-pressed="false">Solarized</button>
+          <button class="ptheme" type="button" data-pv="light" aria-pressed="false">Light</button>
+        </div>
+      </div>
+      <div class="preview-shell" id="pv-shell" style="--pv-bg:#1e1e1e;--pv-fg:#e0e0e0;--pv-surface:#262626;--pv-border:#3a3a3a;">
+        <div class="pv-head">
+          <div class="pv-dots"><i></i><i></i><i></i></div>
+          <span class="pv-title">Mr. Market Miscalculates — James Grant</span>
+          <span>Zen (Z) · Aa</span>
+        </div>
+        <div class="pv-body">
+          <aside class="pv-toc" aria-label="Sample Table of Contents">
+            <div class="pv-toc-h">Contents</div>
+            <div class="pv-toc-item">Foreword</div>
+            <div class="pv-toc-item active">One: Gallery of the Immortals</div>
+            <div class="pv-toc-item sub">· J. Pierpont Morgan</div>
+            <div class="pv-toc-item sub">· Emulate Henry Singleton</div>
+            <div class="pv-toc-item sub">· Inside Isaac’s Head</div>
+            <div class="pv-toc-item">Two: On Planet Stock Market</div>
+          </aside>
+          <div class="pv-page">
+            <h4>One: Gallery of the Immortals</h4>
+            <p>Financial history repeats itself, though never in quite the same costume. <mark>Value is what you get; price is what you pay</mark> — and the gap between the two is where temperament decides the outcome.</p>
+            <p>With offline StarDict lookup, nested chapter navigation, and Readium CFI resume, your place and notes stay yours.</p>
+          </div>
+        </div>
+        <div class="pv-foot">
+          <span>Section 6 / 24 · ~1,420 words · 6 min left</span>
+          <span>25%</span>
+        </div>
+      </div>
+    </div>
   </div>
 
   <section id="features">
@@ -394,7 +522,7 @@ footer p { margin: 0 0 8px; }
       <div class="card"><div class="ic"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M8 4v16"/></svg></div><h3>OPDS catalogues</h3><p>Browse and download books from OPDS feeds, then open them straight into the reader.</p></div>
       <div class="card"><div class="ic"><svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></div><h3>Footnotes &amp; lightbox</h3><p>Inline footnote popups, cross-document links and a full-size image lightbox keep the book intact.</p></div>
       <div class="card"><div class="ic"><svg viewBox="0 0 24 24"><path d="M12 8v4l3 3M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z"/></svg></div><h3>Reliable resume</h3><p>Position is stored as a Readium CFI, returning you to the same passage even after re-conversion.</p></div>
-      <div class="card"><div class="ic"><svg viewBox="0 0 24 24"><path d="M5 3v18l9-9-9-9zM14 3v18"/></svg></div><h3>Save as EPUB</h3><p>Convert any supported format into a clean EPUB 3 file, with structural validation included.</p></div>
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24"><path d="M5 3v18l9-9-9-9zM14 3v18"/></svg></div><h3>Export &amp; citations</h3><p>Convert any book to EPUB 3, KFX, or plain text, validate structure, and copy BibTeX/APA/MLA/Chicago citations.</p></div>
     </div>
   </section>
 
@@ -435,12 +563,12 @@ footer p { margin: 0 0 8px; }
     <h2>Made for long reading sessions</h2>
     <p class="section-desc">The little things add up. Everything here is in the default view or one click away.</p>
     <ul class="changes">
-      <li><strong>Themes that feel like paper.</strong> Light, Dark, Sepia and a fully custom background/foreground theme.</li>
-      <li><strong>Reading statistics.</strong> Section word count and session reading time live in the status line.</li>
-      <li><strong>Nested TOC &amp; print pages.</strong> Hierarchy is preserved, and the print page is shown when the book has a page list.</li>
+      <li><strong>Eight reading themes + custom.</strong> Light, Dark, OLED Black, Sepia, Nord, Solarized, Solarized Dark, E-Ink, plus custom background/foreground hex colors.</li>
+      <li><strong>Reading statistics.</strong> Section word count, WPM-calibrated time remaining, and session reading time live in the status line.</li>
+      <li><strong>Nested TOC &amp; print pages.</strong> Hierarchical chapters and sub-items are indented, with deep search and breadcrumbs.</li>
       <li><strong>Inlined assets.</strong> Images are embedded by <code>ebook-rs</code>, so sections render offline.</li>
       <li><strong>Deduplication.</strong> Opening the same book from another path updates the existing entry via a content hash.</li>
-      <li><strong>Multiple windows &amp; fullscreen.</strong> Open a second reader window or go distraction-free with <code>F11</code>.</li>
+      <li><strong>Zen mode &amp; fullscreen.</strong> Press <code>Z</code> for distraction-free reading or <code>F11</code> for fullscreen.</li>
       <li><strong>LCP passphrase &amp; DRM.</strong> Protected books can be opened by entering a passphrase.</li>
     </ul>
 
@@ -451,9 +579,11 @@ footer p { margin: 0 0 8px; }
 <span class="k">Ctrl+B</span> Toggle bookmark
 <span class="k">Ctrl+C</span> Copy selected text
 <span class="k">Ctrl+L</span> Back to the library
+<span class="k">Z / Esc</span> Toggle or exit Zen mode
 </div><div>
 <span class="k">→ / Space</span> Next section
 <span class="k">←</span> Previous section
+<span class="k">Alt+← / Bksp</span> Jump back in history
 <span class="k">Home / End</span> First / last section
 <span class="k">F11</span> Toggle fullscreen
 <span class="k">+ / −</span> Font size
@@ -515,14 +645,14 @@ footer p { margin: 0 0 8px; }
 
   // Install platform tabs
   const tabs = Array.from(document.querySelectorAll('.tab'));
-  function selectTab(active) {
+  function selectTab(active, focus = true) {
     tabs.forEach(t => {
       const on = t === active;
       t.setAttribute('aria-selected', String(on));
       t.tabIndex = on ? 0 : -1;
       document.getElementById(t.getAttribute('aria-controls')).hidden = !on;
     });
-    active.focus();
+    if (focus) active.focus();
   }
   tabs.forEach((t, i) => {
     t.addEventListener('click', () => selectTab(t));
@@ -531,6 +661,53 @@ footer p { margin: 0 0 8px; }
       if (e.key === 'ArrowLeft') selectTab(tabs[(i - 1 + tabs.length) % tabs.length]);
     });
   });
+  if (/Windows/i.test(navigator.userAgent)) {
+    const winTab = document.getElementById('tab-win');
+    if (winTab) selectTab(winTab, false);
+  }
+
+  // Reader preview theme switcher
+  const pvThemes = {
+    dark:      { bg: '#1e1e1e', fg: '#e0e0e0', surface: '#262626', border: '#3a3a3a' },
+    oled:      { bg: '#000000', fg: '#d4d4d4', surface: '#121212', border: '#262626' },
+    sepia:     { bg: '#f4ecd8', fg: '#5b4636', surface: '#ebe0c6', border: '#d5c6a8' },
+    nord:      { bg: '#2e3440', fg: '#eceff4', surface: '#3b4252', border: '#4c566a' },
+    solarized: { bg: '#fdf6e3', fg: '#657b83', surface: '#eee8d5', border: '#d8d0b8' },
+    light:     { bg: '#ffffff', fg: '#202020', surface: '#f7f7f8', border: '#e2e2e6' },
+  };
+  const pvShell = document.getElementById('pv-shell');
+  document.querySelectorAll('.ptheme').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const t = pvThemes[btn.dataset.pv];
+      if (!t || !pvShell) return;
+      pvShell.style.setProperty('--pv-bg', t.bg);
+      pvShell.style.setProperty('--pv-fg', t.fg);
+      pvShell.style.setProperty('--pv-surface', t.surface);
+      pvShell.style.setProperty('--pv-border', t.border);
+      document.querySelectorAll('.ptheme').forEach(b => b.setAttribute('aria-pressed', String(b === btn)));
+    });
+  });
+
+  // Latest release badge & direct installer links (best-effort)
+  fetch('https://api.github.com/repos/SV-stark/eParna/releases/latest')
+    .then(r => r.ok ? r.json() : null)
+    .then(rel => {
+      if (!rel || !rel.tag_name) return;
+      const pill = document.getElementById('ver-pill');
+      if (pill) {
+        pill.textContent = `Latest: ${rel.tag_name}`;
+        pill.href = rel.html_url || pill.href;
+      }
+      const assets = Array.isArray(rel.assets) ? rel.assets : [];
+      const pick = re => assets.find(a => re.test(a.name));
+      const msi = pick(/\.msi$/i);
+      const pkg = pick(/aarch64.*\.pkg$/i) || pick(/\.pkg$/i);
+      const app = pick(/\.AppImage$/i);
+      if (msi) document.getElementById('dl-msi').href = msi.browser_download_url;
+      if (pkg) document.getElementById('dl-mac').href = pkg.browser_download_url;
+      if (app) document.getElementById('dl-lin').href = app.browser_download_url;
+    })
+    .catch(() => {});
 
   // Copy buttons
   const status = document.getElementById('copy-status');
