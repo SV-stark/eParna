@@ -30,7 +30,7 @@ hosting = "github"
 pr-run-mode = "plan"
 # We hand-maintain parts of release.yml (the AppImage job) and wix/main.wxs (ProductICO),
 # so stop dist from overwriting/checking them.
-allow-dirty = ["ci", "wix"]
+allow-dirty = ["ci", "msi"]
 
 # Reverse-DNS identifier + layout used by the macOS .pkg installer.
 [dist.mac-pkg-config]
