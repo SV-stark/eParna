@@ -258,8 +258,8 @@ pub fn href_to_index(book: &ebook_rs::Book, href: &str) -> Option<usize> {
 pub fn build_toc_items(book: &ebook_rs::Book) -> Vec<TocItem> {
     let mut items = Vec::new();
     for flat in book.flatten_toc() {
-        let Some(section_index) = href_to_index(book, &flat.full_path)
-            .or_else(|| href_to_index(book, &flat.href))
+        let Some(section_index) =
+            href_to_index(book, &flat.full_path).or_else(|| href_to_index(book, &flat.href))
         else {
             continue;
         };

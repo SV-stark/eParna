@@ -2164,10 +2164,7 @@ impl Render for ReaderView {
                     let active_toc_i = self
                         .active_toc_index
                         .filter(|&ai| {
-                            self.toc_items
-                                .get(ai)
-                                .map(|t| t.section_index)
-                                == Some(self.current)
+                            self.toc_items.get(ai).map(|t| t.section_index) == Some(self.current)
                         })
                         .or_else(|| {
                             self.toc_items
@@ -2191,15 +2188,13 @@ impl Render for ReaderView {
                         } else {
                             btn.ghost()
                         };
-                        chapter_list = chapter_list.child(
-                            div().pl(px(indent)).child(btn.on_click(cx.listener(
-                                move |view, _, _, cx| {
-                                    view.jump(idx, cx);
-                                    view.active_toc_index = Some(i);
-                                    cx.notify();
-                                },
-                            ))),
-                        );
+                        chapter_list = chapter_list.child(div().pl(px(indent)).child(
+                            btn.on_click(cx.listener(move |view, _, _, cx| {
+                                view.jump(idx, cx);
+                                view.active_toc_index = Some(i);
+                                cx.notify();
+                            })),
+                        ));
                     }
                     v = v.child(chapter_list);
                 }
@@ -2232,8 +2227,10 @@ impl Render for ReaderView {
                     for &sec in &self.bookmarks {
                         let sec_idx = sec;
                         let is_current = sec_idx == self.current;
-                        let label = if let Some(item) =
-                            self.toc_items.iter().find(|item| item.section_index == sec_idx)
+                        let label = if let Some(item) = self
+                            .toc_items
+                            .iter()
+                            .find(|item| item.section_index == sec_idx)
                         {
                             format!("Sec {}: {}", sec_idx + 1, truncate(item.label.trim(), 22))
                         } else {
