@@ -28,9 +28,9 @@ targets = [
 hosting = "github"
 # Build (not just plan) when a PR targets these branches
 pr-run-mode = "plan"
-# We hand-maintain parts of release.yml (the AppImage job), so stop dist from
-# overwriting/checking it.
-allow-dirty = ["ci"]
+# We hand-maintain parts of release.yml (the AppImage job) and wix/main.wxs (ProductICO),
+# so stop dist from overwriting/checking them.
+allow-dirty = ["ci", "wix"]
 
 # Reverse-DNS identifier + layout used by the macOS .pkg installer.
 [dist.mac-pkg-config]
