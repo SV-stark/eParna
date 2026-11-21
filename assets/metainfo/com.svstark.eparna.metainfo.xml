@@ -23,20 +23,18 @@
     </p>
     <p>Supported formats:</p>
     <ul>
-      <li>EPUB 2 and EPUB 3</li>
-      <li>MOBI and AZW3</li>
-      <li>FictionBook 2 and Microsoft Reader LIT</li>
+      <li>EPUB 2/3, Kobo KEPUB, and Open eBook (OEB/OPF)</li>
+      <li>Kindle MOBI, AZW3, and KFX</li>
+      <li>FictionBook 2, Microsoft Reader LIT, PalmDB (PDB/PMLZ), Rocket eBook (RB), and Psion TCR</li>
       <li>CBZ comic archives</li>
-      <li>PDF</li>
-      <li>ODT and DOCX</li>
-      <li>Rich Text Format</li>
-      <li>Plain text and Markdown</li>
+      <li>PDF, ODT, DOCX, PPTX, and Rich Text Format (RTF)</li>
+      <li>HTML/HTMLZ, Plain text/TXTZ, Markdown, Typst, AsciiDoc, Org-mode, reStructuredText, and LaTeX</li>
     </ul>
     <p>Features include a library with cover thumbnails and deduplication, table
       of contents with deep search, bookmarks, notes, full-text and regex
-      search, light/dark/sepia themes, typography controls, footnotes,
-      dictionary and Wikipedia lookup, OPDS catalog support, EPUB conversion
-      and a built-in book validator.</p>
+      search, light/dark/sepia/OLED themes, typography controls, footnotes,
+      dictionary and Wikipedia lookup, OPDS catalog support, 21+ format
+      conversion, lossless EPUB 3 optimization, and a built-in book validator.</p>
     <p>Reading is fully offline. The only network requests are ones you
       explicitly trigger.</p>
   </description>
@@ -70,6 +68,16 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.9.0" date="2026-11-21">
+      <description>
+        <p>
+          Upgraded to ebook-rs 0.19.0 with 25+ input formats, categorized 21+ format
+          export (plus RAG JSON), lossless EPUB 3 optimization, richer book analytics,
+          and a redesigned reader UI with collapsible sidebar, floating typography/actions
+          popovers, 1-click theme swatches, and click-anywhere library cards.
+        </p>
+      </description>
+    </release>
     <release version="0.8.0" date="2026-11-03">
       <description>
         <p>

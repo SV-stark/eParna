@@ -1,12 +1,33 @@
 use crate::config::covers_dir;
 use crate::models::RecentBook;
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub const SUPPORTED_EXTENSIONS: &[&str] = &[
-    "epub", "mobi", "azw3", "fb2", "pdf", "txt", "md", "docx", "odt", "rtf", "cbz", "lit", "kfx",
-    "kepub",
+    "epub", "kepub", "mobi", "azw3", "kfx", "fb2", "pdf", "txt", "md", "markdown", "docx", "odt",
+    "rtf", "cbz", "lit", "html", "htm", "xhtml", "htmlz", "txtz", "oeb", "opf", "zip", "pdb",
+    "pmlz", "rb", "tcr", "pptx", "typ", "typst", "adoc", "asciidoc", "org", "rst", "tex", "latex",
 ];
+
+/// Return a normalized short format label for a book path (handles OEB
+/// directories and compound `.kepub.epub` filenames).
+pub fn detect_format_label(path: &Path) -> String {
+    if path.is_dir() {
+        return "oeb".to_string();
+    }
+    let lower_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if lower_name.ends_with(".kepub.epub") {
+        return "kepub".to_string();
+    }
+    path.extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+}
 
 pub fn simple_hash(s: &str) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
@@ -97,11 +118,7 @@ pub fn scan_folder_books(
             }
             let title = book.metadata().title.clone();
             let author = book.metadata().creator().to_string();
-            let format = p
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("")
-                .to_lowercase();
+            let format = detect_format_label(&p);
             let total = book.sections().len();
             let cover = cache_cover_to_disk(&book, &key);
 
@@ -242,5 +259,13 @@ mod tests {
     fn test_simple_hash_is_deterministic() {
         assert_eq!(simple_hash("eparna"), simple_hash("eparna"));
         assert_ne!(simple_hash("eparna"), simple_hash("epustak"));
+    }
+
+    #[test]
+    fn test_detect_format_label() {
+        assert_eq!(detect_format_label(Path::new("novel.kepub.epub")), "kepub");
+        assert_eq!(detect_format_label(Path::new("slides.PPTX")), "pptx");
+        assert_eq!(detect_format_label(Path::new("paper.typ")), "typ");
+        assert_eq!(detect_format_label(Path::new(".")), "oeb");
     }
 }

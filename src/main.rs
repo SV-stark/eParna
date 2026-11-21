@@ -26,7 +26,8 @@ use std::path::PathBuf;
 
 use crate::config::{load_state, save_state};
 use crate::export::{
-    format_annotations_markdown, format_book_info, format_citations, format_validation,
+    export_book_bytes, format_annotations_markdown, format_book_info, format_citations,
+    format_validation, optimize_book_epub3, sanitize_filename,
 };
 use crate::html_utils::*;
 use crate::library::*;
@@ -34,6 +35,12 @@ use crate::models::*;
 use crate::network::*;
 use crate::stardict::StarDict;
 use crate::ui_helpers::*;
+
+fn pick_ebook_file() -> Option<PathBuf> {
+    rfd::FileDialog::new()
+        .add_filter("Ebook", SUPPORTED_EXTENSIONS)
+        .pick_file()
+}
 
 fn notify_simple(window: &mut Window, cx: &mut Context<ReaderView>, title: &str, message: String) {
     use gpui_kit::component::WindowExt;
@@ -139,8 +146,10 @@ struct ReaderView {
     cached_constrained_html: String,
     cached_column_px: f32,
 
-    // Resizable sidebar & synced gpui-kit theme mode
+    // Resizable & collapsible sidebar, export format picker, synced gpui-kit theme mode
+    sidebar_open: bool,
     sidebar_width: f32,
+    export_modal: bool,
     synced_dark_mode: Option<bool>,
 }
 
@@ -294,7 +303,9 @@ impl ReaderView {
             cached_progress: 0.0,
             cached_constrained_html: String::new(),
             cached_column_px: 0.0,
+            sidebar_open: false,
             sidebar_width: 260.0,
+            export_modal: false,
             synced_dark_mode: None,
         };
 
@@ -390,11 +401,7 @@ impl ReaderView {
                     book.metadata().direction == ebook_rs::PageProgressionDirection::Rtl;
 
                 let author = book.metadata().creator().to_string();
-                let format = path
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .unwrap_or("")
-                    .to_lowercase();
+                let format = detect_format_label(&path);
                 let total = book.sections().len();
                 let key = path.to_string_lossy().to_string();
                 let saved = self
@@ -883,16 +890,7 @@ impl ReaderView {
         palette: ThemePalette,
     ) -> AnyElement {
         let on_open = cx.listener(|view, _ev, window, cx| {
-            if let Some(path) = rfd::FileDialog::new()
-                .add_filter(
-                    "Ebook",
-                    &[
-                        "epub", "mobi", "azw3", "fb2", "pdf", "txt", "md", "docx", "odt", "rtf",
-                        "cbz", "lit", "kfx", "kepub",
-                    ],
-                )
-                .pick_file()
-            {
+            if let Some(path) = pick_ebook_file() {
                 view.open_file(path, window, cx);
             }
         });
@@ -1060,6 +1058,12 @@ impl ReaderView {
                     let p = r.path.clone();
                     cx.listener(move |view, _ev, _w, cx| view.toggle_favorite(p.clone(), cx))
                 };
+                let on_open_card = {
+                    let p = r.path.clone();
+                    cx.listener(move |view, _ev, window, cx| {
+                        view.open_file(PathBuf::from(p.clone()), window, cx);
+                    })
+                };
                 row = row.child(wide_tile(
                     BookTileMeta {
                         id: id.clone(),
@@ -1070,12 +1074,13 @@ impl ReaderView {
                         pct: book_pct(r),
                     },
                     palette,
+                    on_open_card,
                     h_flex()
                         .gap_1()
                         .items_center()
                         .child(
                             Button::new(format!("{id}-open"))
-                                .primary()
+                                .outline()
                                 .label("Resume")
                                 .on_click(on_open_book),
                         )
@@ -1145,6 +1150,12 @@ impl ReaderView {
                     _ => "Reading",
                 };
 
+                let on_open_row = {
+                    let p = r.path.clone();
+                    cx.listener(move |view, _ev, window, cx| {
+                        view.open_file(PathBuf::from(p.clone()), window, cx);
+                    })
+                };
                 list_col = list_col.child(
                     h_flex()
                         .w_full()
@@ -1154,38 +1165,50 @@ impl ReaderView {
                         .bg(palette.surface)
                         .border_1()
                         .border_color(palette.border)
+                        .hover(|s| s.border_color(palette.muted))
                         .items_center()
-                        .child(cover_art(
-                            format!("{id}-c"),
-                            cover_for(&self.covers, r),
-                            &book_title(r),
-                            &r.format,
-                            palette,
-                            38.0,
-                            52.0,
-                        ))
                         .child(
-                            v_flex()
+                            h_flex()
+                                .id(format!("{id}-row"))
                                 .flex_1()
+                                .gap_3()
+                                .items_center()
+                                .on_click(on_open_row)
+                                .child(cover_art(
+                                    format!("{id}-c"),
+                                    cover_for(&self.covers, r),
+                                    &book_title(r),
+                                    &r.format,
+                                    palette,
+                                    38.0,
+                                    52.0,
+                                ))
                                 .child(
-                                    div()
-                                        .text_size(px(14.0))
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .child(book_title(r)),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(px(12.0))
-                                        .text_color(palette.muted)
-                                        .child(book_subtitle(r)),
-                                )
-                                .child(div().text_size(px(11.0)).text_color(palette.muted).child(
-                                    format!(
-                                        "{} min read · {} sections",
-                                        r.reading_time_secs / 60,
-                                        r.total
-                                    ),
-                                )),
+                                    v_flex()
+                                        .flex_1()
+                                        .child(
+                                            div()
+                                                .text_size(px(14.0))
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .child(book_title(r)),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(12.0))
+                                                .text_color(palette.muted)
+                                                .child(book_subtitle(r)),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(11.0))
+                                                .text_color(palette.muted)
+                                                .child(format!(
+                                                    "{} min read · {} sections",
+                                                    r.reading_time_secs / 60,
+                                                    r.total
+                                                )),
+                                        ),
+                                ),
                         )
                         .child(
                             v_flex()
@@ -1205,7 +1228,7 @@ impl ReaderView {
                                 .items_center()
                                 .child(
                                     Button::new(format!("{id}-open"))
-                                        .primary()
+                                        .outline()
                                         .label("Read")
                                         .on_click(on_open_book),
                                 )
@@ -1295,19 +1318,11 @@ impl ReaderView {
                         pct,
                     },
                     palette,
+                    on_open_book,
                     h_flex()
-                        .gap_1()
+                        .w_full()
+                        .justify_between()
                         .items_center()
-                        .child(
-                            Button::new(format!("{id}-open"))
-                                .primary()
-                                .label(if pct > 0.0 && pct < 100.0 {
-                                    "Continue"
-                                } else {
-                                    "Open"
-                                })
-                                .on_click(on_open_book),
-                        )
                         .child(
                             Button::new(format!("{id}-st"))
                                 .ghost()
@@ -1316,18 +1331,23 @@ impl ReaderView {
                                 .on_click(on_status),
                         )
                         .child(
-                            Button::new(format!("{id}-fav"))
-                                .ghost()
-                                .label(star_label(r.favorite))
-                                .tooltip("Toggle favorite")
-                                .on_click(on_fav),
-                        )
-                        .child(
-                            Button::new(format!("{id}-rm"))
-                                .ghost()
-                                .label("\u{2715}")
-                                .tooltip("Remove from library")
-                                .on_click(on_remove),
+                            h_flex()
+                                .gap_1()
+                                .items_center()
+                                .child(
+                                    Button::new(format!("{id}-fav"))
+                                        .ghost()
+                                        .label(star_label(r.favorite))
+                                        .tooltip("Toggle favorite")
+                                        .on_click(on_fav),
+                                )
+                                .child(
+                                    Button::new(format!("{id}-rm"))
+                                        .ghost()
+                                        .label("\u{2715}")
+                                        .tooltip("Remove from library")
+                                        .on_click(on_remove),
+                                ),
                         )
                         .into_any_element(),
                 ));
@@ -1360,16 +1380,7 @@ impl ReaderView {
                 );
             if self.state.recent.is_empty() {
                 let on_open_empty = cx.listener(|view, _ev, window, cx| {
-                    if let Some(path) = rfd::FileDialog::new()
-                        .add_filter(
-                            "Ebook",
-                            &[
-                                "epub", "mobi", "azw3", "fb2", "pdf", "txt", "md", "docx", "odt",
-                                "rtf", "cbz", "lit", "kfx", "kepub",
-                            ],
-                        )
-                        .pick_file()
-                    {
+                    if let Some(path) = pick_ebook_file() {
                         view.open_file(path, window, cx);
                     }
                 });
@@ -1676,25 +1687,26 @@ impl ReaderView {
         self.sync_state();
         cx.notify();
     }
-    fn cycle_theme(&mut self, cx: &mut Context<Self>) {
-        self.theme = match self.theme.as_str() {
-            "Light" => "Dark".into(),
-            "Dark" => "Sepia".into(),
-            "Sepia" => "Nord".into(),
-            "Nord" => "Solarized".into(),
-            "Solarized" => "Solarized Dark".into(),
-            "Solarized Dark" => "E-Ink".into(),
-            "E-Ink" => "OLED Black".into(),
-            "OLED Black" => "Custom".into(),
-            _ => "Light".into(),
-        };
-        self.dark = matches!(
-            self.theme.as_str(),
-            "Dark" | "OLED Black" | "Nord" | "Solarized Dark"
-        );
+    fn set_theme(&mut self, theme: &str, cx: &mut Context<Self>) {
+        self.theme = theme.to_string();
+        self.dark = is_dark_theme(&self.theme);
         self.sync_state();
         self.load_current(cx);
         cx.notify();
+    }
+    fn cycle_theme(&mut self, cx: &mut Context<Self>) {
+        let next = match self.theme.as_str() {
+            "Light" => "Dark",
+            "Dark" => "Sepia",
+            "Sepia" => "Nord",
+            "Nord" => "Solarized",
+            "Solarized" => "Solarized Dark",
+            "Solarized Dark" => "E-Ink",
+            "E-Ink" => "OLED Black",
+            "OLED Black" => "Custom",
+            _ => "Light",
+        };
+        self.set_theme(next, cx);
     }
     fn toggle_rtl(&mut self, cx: &mut Context<Self>) {
         self.rtl_mode = !self.rtl_mode;
@@ -1746,12 +1758,13 @@ Reading & Display:
   Ctrl + F             Find in current chapter
 
 Sidebars & Panels:
+  Ctrl + \\            Toggle sidebar visibility
   t                    Table of Contents sidebar
   s                    Search in book sidebar
   a                    Annotations & Highlights sidebar
   d                    Dictionary & Reference sidebar
   b / Ctrl + B         Toggle Bookmark for current section
-  p / Ctrl + P         Toggle Typography & Reading Settings panel
+  p / Ctrl + P         Toggle Typography & Reading Settings popover
   Ctrl + C             Copy selected text
   ? / F1               This Keyboard Shortcuts cheatsheet";
 
@@ -1782,134 +1795,125 @@ Sidebars & Panels:
         cx.notify();
     }
 
-    fn save_as_epub(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn export_book_as(
+        &mut self,
+        label: &str,
+        ext: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(book) = &self.book else {
             return;
         };
-        match book.export_epub3_bytes() {
-            Ok(bytes) => {
-                let name = format!(
-                    "{}.epub",
-                    book.metadata()
-                        .title
-                        .chars()
-                        .map(|c| {
-                            if c.is_alphanumeric() || c == ' ' || c == '-' {
-                                c
-                            } else {
-                                '_'
-                            }
-                        })
-                        .collect::<String>()
-                );
-                let chosen = rfd::FileDialog::new()
-                    .set_file_name(&name)
-                    .add_filter("EPUB", &["epub"])
-                    .save_file();
-                if let Some(path) = chosen {
-                    let n = bytes.len();
-                    let ok = std::fs::write(&path, &bytes).is_ok();
-                    notify_simple(
-                        window,
-                        cx,
-                        if ok { "Saved EPUB" } else { "Write failed" },
-                        format!("{} ({n} bytes)", path.display()),
-                    );
-                }
-            }
-            Err(e) => notify_simple(window, cx, "Export failed", e.to_string()),
-        }
-    }
-
-    fn save_as_kfx(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(book) = &self.book else {
-            return;
-        };
-        match book.export_kfx_bytes() {
-            Ok(bytes) => {
-                let name = format!(
-                    "{}.kfx",
-                    book.metadata()
-                        .title
-                        .chars()
-                        .map(|c| {
-                            if c.is_alphanumeric() || c == ' ' || c == '-' {
-                                c
-                            } else {
-                                '_'
-                            }
-                        })
-                        .collect::<String>()
-                );
-                let chosen = rfd::FileDialog::new()
-                    .set_file_name(&name)
-                    .add_filter("Amazon KFX", &["kfx"])
-                    .save_file();
-                if let Some(path) = chosen {
-                    let n = bytes.len();
-                    let ok = std::fs::write(&path, &bytes).is_ok();
-                    notify_simple(
-                        window,
-                        cx,
-                        if ok { "Saved KFX" } else { "Write failed" },
-                        format!("{} ({n} bytes)", path.display()),
-                    );
-                }
-            }
-            Err(e) => notify_simple(window, cx, "Export failed", e.to_string()),
-        }
-    }
-
-    fn save_as_txt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(book) = &self.book else {
-            return;
-        };
-        let mut full_text = String::new();
-        full_text.push_str(&format!("{}\n", book.metadata().title));
-        if !book.metadata().creators.is_empty() {
-            full_text.push_str(&format!("By {}\n", book.metadata().creators.join(", ")));
-        }
-        full_text.push_str("\n========================================\n\n");
-        for i in 0..book.sections().len() {
-            if let Ok(sec) = book.get_section(i) {
-                let t = sec.plain_text.trim();
-                if !t.is_empty() {
-                    full_text.push_str(t);
-                    full_text.push_str("\n\n---\n\n");
-                }
-            }
-        }
-        let name = format!(
-            "{}.txt",
-            book.metadata()
-                .title
-                .chars()
-                .map(|c| {
-                    if c.is_alphanumeric() || c == ' ' || c == '-' {
-                        c
-                    } else {
-                        '_'
-                    }
-                })
-                .collect::<String>()
-        );
+        let stem = sanitize_filename(&book.metadata().title);
+        let filter_ext = if ext == "kepub.epub" { "epub" } else { ext };
         let chosen = rfd::FileDialog::new()
-            .set_file_name(&name)
-            .add_filter("Plain Text", &["txt"])
+            .set_file_name(format!("{stem}.{ext}"))
+            .add_filter(label, &[filter_ext])
             .save_file();
-        if let Some(path) = chosen {
-            let n = full_text.len();
-            let ok = std::fs::write(&path, full_text.as_bytes()).is_ok();
-            notify_simple(
-                window,
-                cx,
-                if ok {
-                    "Saved Plain Text"
-                } else {
-                    "Write failed"
-                },
-                format!("{} ({n} bytes)", path.display()),
-            );
+        let Some(path) = chosen else {
+            return;
+        };
+        self.export_modal = false;
+        match export_book_bytes(book, &path) {
+            Ok(bytes) => {
+                let n = bytes.len();
+                let ok = std::fs::write(&path, &bytes).is_ok();
+                notify_simple(
+                    window,
+                    cx,
+                    if ok { "Exported Book" } else { "Write failed" },
+                    format!("{} ({n} bytes)", path.display()),
+                );
+            }
+            Err(e) => notify_simple(window, cx, "Export failed", e.to_string()),
+        }
+        cx.notify();
+    }
+
+    fn export_book_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(book) = &self.book else {
+            return;
+        };
+        let stem = sanitize_filename(&book.metadata().title);
+        let chosen = rfd::FileDialog::new()
+            .set_file_name(format!("{stem}.epub"))
+            .add_filter("EPUB 3", &["epub"])
+            .add_filter("Kobo KEPUB", &["kepub.epub", "kepub"])
+            .add_filter("Amazon KFX", &["kfx"])
+            .add_filter("Kindle MOBI", &["mobi"])
+            .add_filter("Kindle AZW3", &["azw3"])
+            .add_filter("PDF Document", &["pdf"])
+            .add_filter("Markdown", &["md"])
+            .add_filter("Plain Text", &["txt"])
+            .add_filter("HTML5", &["html"])
+            .add_filter("Word DOCX", &["docx"])
+            .add_filter("OpenDocument ODT", &["odt"])
+            .add_filter("Rich Text RTF", &["rtf"])
+            .add_filter("FictionBook 2", &["fb2"])
+            .add_filter("PowerPoint PPTX", &["pptx"])
+            .add_filter("LaTeX", &["tex"])
+            .add_filter("Typst", &["typ"])
+            .add_filter("AsciiDoc", &["adoc"])
+            .add_filter("Org-mode", &["org"])
+            .add_filter("reStructuredText", &["rst"])
+            .add_filter("HTMLZ / TXTZ", &["htmlz", "txtz"])
+            .add_filter("OEB / ZIP", &["oeb", "zip"])
+            .add_filter("Legacy (PDB/PMLZ/RB/TCR)", &["pdb", "pmlz", "rb", "tcr"])
+            .add_filter("RAG Chunks JSON", &["json"])
+            .save_file();
+        let Some(path) = chosen else {
+            return;
+        };
+        match export_book_bytes(book, &path) {
+            Ok(bytes) => {
+                let n = bytes.len();
+                let ok = std::fs::write(&path, &bytes).is_ok();
+                notify_simple(
+                    window,
+                    cx,
+                    if ok { "Exported Book" } else { "Write failed" },
+                    format!("{} ({n} bytes)", path.display()),
+                );
+            }
+            Err(e) => notify_simple(window, cx, "Export failed", e.to_string()),
+        }
+    }
+
+    fn optimize_epub(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(book) = &self.book else {
+            return;
+        };
+        let stem = sanitize_filename(&book.metadata().title);
+        let chosen = rfd::FileDialog::new()
+            .set_file_name(format!("{stem}.optimized.epub"))
+            .add_filter("EPUB 3", &["epub"])
+            .save_file();
+        let Some(path) = chosen else {
+            return;
+        };
+        match optimize_book_epub3(book) {
+            Ok((bytes, report)) => {
+                let n = bytes.len();
+                let ok = std::fs::write(&path, &bytes).is_ok();
+                notify_simple(
+                    window,
+                    cx,
+                    if ok {
+                        "Saved Optimized EPUB"
+                    } else {
+                        "Write failed"
+                    },
+                    format!(
+                        "{} ({n} bytes · saved {} B, {} deduped assets, {} purged CSS rules)",
+                        path.display(),
+                        report.saved_bytes,
+                        report.deduplicated_assets_count,
+                        report.purged_css_rules_count
+                    ),
+                );
+            }
+            Err(e) => notify_simple(window, cx, "Optimize failed", e.to_string()),
         }
     }
 
@@ -2074,16 +2078,7 @@ impl Render for ReaderView {
         let progress = self.cached_progress;
 
         let on_open = cx.listener(|view, _ev, window, cx| {
-            if let Some(path) = rfd::FileDialog::new()
-                .add_filter(
-                    "Ebook",
-                    &[
-                        "epub", "mobi", "azw3", "fb2", "pdf", "txt", "md", "docx", "odt", "rtf",
-                        "cbz", "lit", "kfx", "kepub",
-                    ],
-                )
-                .pick_file()
-            {
+            if let Some(path) = pick_ebook_file() {
                 view.open_file(path, window, cx);
             }
         });
@@ -2302,77 +2297,27 @@ impl Render for ReaderView {
                                 .on_click(on_export_file),
                         ),
                 );
-                v = v.child(
-                    h_flex()
-                        .gap_1()
-                        .items_center()
-                        .child(div().text_size(px(11.0)).child("Color:"))
-                        .child(
-                            Button::new("col-y")
-                                .ghost()
-                                .label(if self.highlight_color == "yellow" {
-                                    "● Yellow"
-                                } else {
-                                    "Yellow"
-                                })
-                                .on_click(cx.listener(|v, _, _, cx| {
-                                    v.highlight_color = "yellow".into();
-                                    cx.notify();
-                                })),
-                        )
-                        .child(
-                            Button::new("col-g")
-                                .ghost()
-                                .label(if self.highlight_color == "green" {
-                                    "● Green"
-                                } else {
-                                    "Green"
-                                })
-                                .on_click(cx.listener(|v, _, _, cx| {
-                                    v.highlight_color = "green".into();
-                                    cx.notify();
-                                })),
-                        )
-                        .child(
-                            Button::new("col-b")
-                                .ghost()
-                                .label(if self.highlight_color == "blue" {
-                                    "● Blue"
-                                } else {
-                                    "Blue"
-                                })
-                                .on_click(cx.listener(|v, _, _, cx| {
-                                    v.highlight_color = "blue".into();
-                                    cx.notify();
-                                })),
-                        )
-                        .child(
-                            Button::new("col-p")
-                                .ghost()
-                                .label(if self.highlight_color == "pink" {
-                                    "● Pink"
-                                } else {
-                                    "Pink"
-                                })
-                                .on_click(cx.listener(|v, _, _, cx| {
-                                    v.highlight_color = "pink".into();
-                                    cx.notify();
-                                })),
-                        )
-                        .child(
-                            Button::new("col-v")
-                                .ghost()
-                                .label(if self.highlight_color == "purple" {
-                                    "● Purple"
-                                } else {
-                                    "Purple"
-                                })
-                                .on_click(cx.listener(|v, _, _, cx| {
-                                    v.highlight_color = "purple".into();
-                                    cx.notify();
-                                })),
-                        ),
+                let mut color_row = h_flex().gap_2().items_center().child(
+                    div()
+                        .text_size(px(11.0))
+                        .text_color(palette.muted)
+                        .child("Color:"),
                 );
+                for color_name in ["yellow", "green", "blue", "pink", "purple"] {
+                    let c = color_name.to_string();
+                    let selected = self.highlight_color == color_name;
+                    color_row = color_row.child(highlight_dot(
+                        format!("col-{color_name}"),
+                        color_name,
+                        selected,
+                        palette.fg,
+                        cx.listener(move |v, _, _, cx| {
+                            v.highlight_color = c.clone();
+                            cx.notify();
+                        }),
+                    ));
+                }
+                v = v.child(color_row);
                 for (i, a) in self.annotations.iter().enumerate() {
                     let sec = a.section;
                     let summary = a.summary();
@@ -2699,67 +2644,112 @@ impl Render for ReaderView {
                 .into_any_element()
         });
 
-        let mut left_controls = h_flex()
-            .gap_2()
-            .items_center()
-            .child(
-                Button::new("library")
-                    .ghost()
-                    .label("Library")
-                    .tooltip("Back to library (Ctrl+L)")
-                    .on_click(on_lib),
-            )
-            .child(
-                Button::new("open")
-                    .outline()
-                    .label("Open")
-                    .tooltip("Open ebook (Ctrl+O)")
-                    .on_click(on_open),
-            );
+        let sb_toggle_btn = {
+            let b = Button::new("toggle-sb")
+                .label("Sidebar")
+                .tooltip("Toggle sidebar (Ctrl+\\)");
+            let b = if self.sidebar_open {
+                b.outline()
+            } else {
+                b.ghost()
+            };
+            b.on_click(cx.listener(|v, _, _, cx| {
+                v.sidebar_open = !v.sidebar_open;
+                cx.notify();
+            }))
+        };
+
+        let mut left_controls = h_flex().gap_1().items_center().child(sb_toggle_btn).child(
+            Button::new("library")
+                .ghost()
+                .label("Library")
+                .tooltip("Back to library (Ctrl+L)")
+                .on_click(on_lib),
+        );
 
         if let Some(btn) = back_btn {
             left_controls = left_controls.child(btn);
         }
 
-        let header_title = self
+        let current_chapter_title = self
+            .active_toc_index
+            .and_then(|idx| self.toc_items.get(idx))
+            .or_else(|| {
+                self.toc_items
+                    .iter()
+                    .find(|item| item.section_index == self.current)
+            })
+            .map(|item| truncate(item.label.trim(), 34));
+
+        let book_title_short = self
             .book
             .as_ref()
             .map(|b| truncate(&b.metadata().title, 36))
             .unwrap_or_default();
 
+        let header_title = match &current_chapter_title {
+            Some(ch) if !ch.is_empty() && ch != &book_title_short => {
+                format!("{book_title_short} · {ch}")
+            }
+            _ => book_title_short,
+        };
+
+        let find_btn = {
+            let b = Button::new("find-btn")
+                .label("Find")
+                .tooltip("Find in chapter (Ctrl+F)");
+            let b = if self.show_find_bar {
+                b.outline()
+            } else {
+                b.ghost()
+            };
+            b.on_click(cx.listener(|v, _, _, cx| {
+                v.show_find_bar = !v.show_find_bar;
+                cx.notify();
+            }))
+        };
+
+        let aa_btn = {
+            let b = Button::new("aa")
+                .label("Aa")
+                .tooltip("Typography & themes (P)");
+            let b = if self.panel == Panel::Typography {
+                b.outline()
+            } else {
+                b.ghost()
+            };
+            b.on_click(cx.listener(|view, _, _, cx| {
+                view.panel = if view.panel == Panel::Typography {
+                    Panel::None
+                } else {
+                    Panel::Typography
+                };
+                cx.notify();
+            }))
+        };
+
+        let more_btn = {
+            let b = Button::new("more")
+                .label("\u{22ef}")
+                .tooltip("Book actions");
+            let b = if self.panel == Panel::Actions {
+                b.outline()
+            } else {
+                b.ghost()
+            };
+            b.on_click(cx.listener(|view, _, _, cx| {
+                view.panel = if view.panel == Panel::Actions {
+                    Panel::None
+                } else {
+                    Panel::Actions
+                };
+                cx.notify();
+            }))
+        };
+
         let right_controls = h_flex()
             .gap_1()
             .items_center()
-            .flex_wrap()
-            .child(
-                Button::new("prev")
-                    .ghost()
-                    .label(if self.rtl_mode {
-                        "\u{203a}"
-                    } else {
-                        "\u{2039}"
-                    })
-                    .tooltip("Previous section (←)")
-                    .on_click(on_prev),
-            )
-            .child(
-                div()
-                    .text_size(px(12.0))
-                    .text_color(palette.muted)
-                    .px_1()
-                    .child(format!("{pos} ({progress:.0}%)")),
-            )
-            .child(
-                Button::new("next")
-                    .ghost()
-                    .label(if self.rtl_mode {
-                        "\u{2039}"
-                    } else {
-                        "\u{203a}"
-                    })
-                    .tooltip("Next section (→)")
-                    .on_click(on_next),
-            )
             .child(
                 Button::new("bm")
                     .ghost()
@@ -2769,35 +2759,19 @@ impl Render for ReaderView {
             )
             .child(
                 Button::new("highlight")
-                    .outline()
+                    .ghost()
                     .label("Highlight")
                     .tooltip("Highlight selected text")
                     .on_click(on_highlight),
             )
-            .child(
-                Button::new("hl-col")
-                    .ghost()
-                    .label(format!("[{}]", self.highlight_color))
-                    .tooltip("Cycle highlight color")
-                    .on_click(cx.listener(|v, _, _, cx| v.cycle_highlight_color(cx))),
-            )
-            .child(
-                Button::new("copy")
-                    .ghost()
-                    .label("Copy")
-                    .tooltip("Copy selection (Ctrl+C)")
-                    .on_click(on_copy),
-            )
-            .child(
-                Button::new("find-btn")
-                    .ghost()
-                    .label("Find")
-                    .tooltip("Find in book (Ctrl+F)")
-                    .on_click(cx.listener(|v, _, _, cx| {
-                        v.show_find_bar = !v.show_find_bar;
-                        cx.notify();
-                    })),
-            )
+            .child(highlight_dot(
+                "hl-col".to_string(),
+                &self.highlight_color,
+                true,
+                palette.border,
+                cx.listener(|v, _, _, cx| v.cycle_highlight_color(cx)),
+            ))
+            .child(find_btn)
             .child(
                 Button::new("zen-hdr")
                     .ghost()
@@ -2805,41 +2779,8 @@ impl Render for ReaderView {
                     .tooltip("Distraction-free mode (Z)")
                     .on_click(cx.listener(|view, _, _, cx| view.toggle_zen_mode(cx))),
             )
-            .child(
-                Button::new("aa")
-                    .ghost()
-                    .label("Aa")
-                    .tooltip("Typography & theme (P)")
-                    .on_click(cx.listener(|view, _, _, cx| {
-                        view.panel = if view.panel == Panel::Typography {
-                            Panel::None
-                        } else {
-                            Panel::Typography
-                        };
-                        cx.notify();
-                    })),
-            )
-            .child(
-                Button::new("more")
-                    .ghost()
-                    .label("\u{22ef}")
-                    .tooltip("More actions")
-                    .on_click(cx.listener(|view, _, _, cx| {
-                        view.panel = if view.panel == Panel::Actions {
-                            Panel::None
-                        } else {
-                            Panel::Actions
-                        };
-                        cx.notify();
-                    })),
-            )
-            .child(
-                Button::new("shortcuts-btn")
-                    .ghost()
-                    .label("?")
-                    .tooltip("Keyboard shortcuts (?)")
-                    .on_click(cx.listener(|view, _, _, cx| view.show_shortcuts_modal(cx))),
-            );
+            .child(aa_btn)
+            .child(more_btn);
 
         let header = h_flex()
             .w_full()
@@ -2861,17 +2802,79 @@ impl Render for ReaderView {
             )
             .child(right_controls);
 
-        let mut typography_panel = h_flex()
-            .w_full()
-            .flex_wrap()
-            .items_center()
-            .gap_5()
-            .px_3()
-            .py_2()
-            .border_b_1()
+        let mut theme_grid = h_flex().gap_2().flex_wrap();
+        for &(theme_name, short_label) in THEME_PRESETS {
+            let selected = self.theme == theme_name;
+            let name_owned = theme_name.to_string();
+            let swatch_palette = theme_palette_for(theme_name, &self.custom_bg, &self.custom_fg);
+            theme_grid = theme_grid.child(theme_swatch(
+                format!("th-sw-{theme_name}"),
+                short_label,
+                swatch_palette,
+                selected,
+                palette.fg,
+                cx.listener(move |v, _, _, cx| v.set_theme(&name_owned, cx)),
+            ));
+        }
+
+        let mut typography_popover = v_flex()
+            .w(px(344.0))
+            .max_h(px(520.0))
+            .gap_3()
+            .p_4()
+            .rounded_lg()
+            .bg(palette.surface)
+            .text_color(palette.fg)
+            .border_1()
+            .border_color(palette.border)
+            .shadow_lg()
+            .child(
+                h_flex()
+                    .justify_between()
+                    .items_center()
+                    .child(
+                        div()
+                            .text_size(px(13.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Appearance & Typography"),
+                    )
+                    .child(
+                        Button::new("reset-display")
+                            .ghost()
+                            .label("Reset")
+                            .tooltip("Reset typography to defaults")
+                            .on_click(cx.listener(|v, _, _, cx| v.reset_display(cx))),
+                    ),
+            )
+            .child(theme_grid);
+
+        if self.theme == "Custom" {
+            typography_popover = typography_popover.child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(palette.muted)
+                            .child("Bg"),
+                    )
+                    .child(Input::new(&self.custom_bg_input).w(px(110.0)))
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(palette.muted)
+                            .child("Fg"),
+                    )
+                    .child(Input::new(&self.custom_fg_input).w(px(110.0))),
+            );
+        }
+
+        typography_popover = typography_popover
+            .child(div().w_full().h(px(1.0)).bg(palette.border))
             .child(setting_row(
-                "Size",
-                format!("{:.0}", self.font_size),
+                "Font size",
+                format!("{:.0} px", self.font_size),
                 Button::new("fs-dec")
                     .ghost()
                     .label("\u{2212}")
@@ -2899,7 +2902,7 @@ impl Render for ReaderView {
             ))
             .child(setting_row(
                 "Margin",
-                format!("{:.0}", self.margin),
+                format!("{:.0} px", self.margin),
                 Button::new("mg-dec")
                     .ghost()
                     .label("\u{2212}")
@@ -2913,7 +2916,7 @@ impl Render for ReaderView {
             ))
             .child(setting_row(
                 "Text width",
-                format!("{:.0}", self.max_width),
+                format!("{:.0} px", self.max_width),
                 Button::new("mw-dec")
                     .ghost()
                     .label("\u{2212}")
@@ -2924,35 +2927,6 @@ impl Render for ReaderView {
                     .label("+")
                     .on_click(cx.listener(|v, _, _, cx| v.adjust_width(40.0, cx)))
                     .into_any_element(),
-            ))
-            .child(cycle_row(
-                "Typeface",
-                &self.font_family,
-                "tf",
-                cx.listener(|v, _, _, cx| v.cycle_font(cx)),
-            ))
-            .child(cycle_row(
-                "Theme",
-                &self.theme,
-                "th",
-                cx.listener(|v, _, _, cx| v.cycle_theme(cx)),
-            ))
-            .child(cycle_row(
-                "Align",
-                if self.justify { "Justify" } else { "Left" },
-                "al",
-                cx.listener(|v, _, _, cx| {
-                    v.justify = !v.justify;
-                    v.sync_state();
-                    v.load_current(cx);
-                    cx.notify();
-                }),
-            ))
-            .child(cycle_row(
-                "Pages",
-                if self.two_page { "two" } else { "one" },
-                "pg",
-                cx.listener(|v, _, _, cx| v.toggle_two_page(cx)),
             ))
             .child(setting_row(
                 "Speed",
@@ -2968,153 +2942,217 @@ impl Render for ReaderView {
                     .on_click(cx.listener(|v, _, _, cx| v.adjust_wpm(20, cx)))
                     .into_any_element(),
             ))
-            .child(
-                Button::new("reset-display")
-                    .ghost()
-                    .label("Reset to defaults")
-                    .on_click(cx.listener(|v, _, _, cx| v.reset_display(cx))),
-            );
-
-        if self.theme == "Custom" {
-            typography_panel = typography_panel.child(
-                h_flex()
-                    .gap_3()
-                    .items_center()
-                    .child(div().w(px(96.0)).text_size(px(12.0)).child("Custom bg"))
-                    .child(Input::new(&self.custom_bg_input).w(px(120.0)))
-                    .child(div().w(px(96.0)).text_size(px(12.0)).child("Custom fg"))
-                    .child(Input::new(&self.custom_fg_input).w(px(120.0))),
-            );
-        }
-
-        let actions_panel = h_flex()
-            .w_full()
-            .flex_wrap()
-            .items_center()
-            .gap_2()
-            .px_3()
-            .py_2()
-            .border_b_1()
-            .child(
-                Button::new("info")
-                    .ghost()
-                    .label("Book info\u{2026}")
-                    .on_click(cx.listener(|v, _, _, cx| {
-                        if let Some(body) = v.book_info_body() {
-                            v.show_modal("Book info", body, cx);
-                        }
-                    })),
-            )
-            .child(
-                Button::new("validate")
-                    .ghost()
-                    .label("Validate book\u{2026}")
-                    .on_click(cx.listener(|v, _, _, cx| {
-                        if let Some(body) = v.validation_body() {
-                            v.show_modal("Validation", body, cx);
-                        }
-                    })),
-            )
-            .child(
-                Button::new("saveepub")
-                    .ghost()
-                    .label("Save as EPUB\u{2026}")
-                    .on_click(cx.listener(|v, _, window, cx| v.save_as_epub(window, cx))),
-            )
-            .child(
-                Button::new("savekfx")
-                    .ghost()
-                    .label("Save as KFX\u{2026}")
-                    .on_click(cx.listener(|v, _, window, cx| v.save_as_kfx(window, cx))),
-            )
-            .child(
-                Button::new("savetxt")
-                    .ghost()
-                    .label("Save as TXT\u{2026}")
-                    .on_click(cx.listener(|v, _, window, cx| v.save_as_txt(window, cx))),
-            )
-            .child(
-                Button::new("citations")
-                    .ghost()
-                    .label("Citations\u{2026}")
-                    .on_click(cx.listener(|v, _, _, cx| {
-                        if let Some(body) = v.citations_body() {
-                            v.show_modal("Citations (BibTeX, APA, MLA, Chicago)", body, cx);
-                        }
-                    })),
-            )
-            .child(
-                Button::new("export")
-                    .ghost()
-                    .label("Export notes\u{2026}")
-                    .on_click(cx.listener(|v, _, window, cx| v.export_annotations(window, cx))),
-            )
+            .child(div().w_full().h(px(1.0)).bg(palette.border))
             .child(cycle_row(
-                "Reading Flow",
-                if self.rtl_mode {
-                    "RTL (Right-to-Left)"
-                } else {
-                    "LTR (Left-to-Right)"
-                },
-                "flow",
+                "Typeface",
+                &self.font_family,
+                "tf",
+                cx.listener(|v, _, _, cx| v.cycle_font(cx)),
+            ))
+            .child(cycle_row(
+                "Align",
+                if self.justify { "Justify" } else { "Left" },
+                "al",
                 cx.listener(|v, _, _, cx| {
-                    v.rtl_mode = !v.rtl_mode;
+                    v.justify = !v.justify;
+                    v.sync_state();
+                    v.load_current(cx);
                     cx.notify();
                 }),
             ))
+            .child(cycle_row(
+                "Pages",
+                if self.two_page { "Two" } else { "One" },
+                "pg",
+                cx.listener(|v, _, _, cx| v.toggle_two_page(cx)),
+            ));
+
+        let actions_popover = v_flex()
+            .w(px(284.0))
+            .gap_2()
+            .p_3()
+            .rounded_lg()
+            .bg(palette.surface)
+            .text_color(palette.fg)
+            .border_1()
+            .border_color(palette.border)
+            .shadow_lg()
             .child(
-                Button::new("sc-modal")
-                    .ghost()
-                    .label("Shortcuts (?)")
-                    .on_click(cx.listener(|v, _, _, cx| v.show_shortcuts_modal(cx))),
+                div()
+                    .text_size(px(11.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(palette.muted)
+                    .child("NAVIGATE"),
             )
             .child(
-                Button::new("zen-btn")
-                    .ghost()
-                    .label("Zen mode (Z)")
-                    .on_click(cx.listener(|v, _, _, cx| v.toggle_zen_mode(cx))),
-            )
-            .child(div().w(px(1.0)).h(px(18.0)).border_l_1())
-            .child(Input::new(&self.goto_input).w(px(100.0)))
-            .child(
-                Button::new("go")
-                    .ghost()
-                    .label("Go to sec/%")
-                    .on_click(cx.listener(|v, _ev, _w, cx| {
-                        let s = v.goto_input.read(cx).value().trim().to_string();
-                        if s.ends_with('%') {
-                            if let Ok(pct) = s.trim_end_matches('%').trim().parse::<f32>()
-                                && let Some(book) = &v.book
-                            {
-                                let total = book.sections().len();
-                                if total > 0 {
-                                    let idx = ((pct / 100.0) * (total as f32)).round() as usize;
-                                    v.jump(idx.min(total - 1), cx);
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(Input::new(&self.goto_input).flex_1())
+                    .child(
+                        Button::new("go")
+                            .outline()
+                            .label("Go")
+                            .on_click(cx.listener(|v, _ev, _w, cx| {
+                                let s = v.goto_input.read(cx).value().trim().to_string();
+                                if s.ends_with('%') {
+                                    if let Ok(pct) = s.trim_end_matches('%').trim().parse::<f32>()
+                                        && let Some(book) = &v.book
+                                    {
+                                        let total = book.sections().len();
+                                        if total > 0 {
+                                            let idx =
+                                                ((pct / 100.0) * (total as f32)).round() as usize;
+                                            v.jump(idx.min(total.saturating_sub(1)), cx);
+                                        }
+                                    }
+                                } else if let Ok(n) = s.parse::<usize>() {
+                                    v.jump(n.saturating_sub(1), cx);
                                 }
-                            }
-                        } else if let Ok(n) = s.parse::<usize>() {
-                            v.jump(n.saturating_sub(1), cx);
-                        }
-                    })),
+                                v.panel = Panel::None;
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(div().w_full().h(px(1.0)).bg(palette.border))
+            .child(
+                div()
+                    .text_size(px(11.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(palette.muted)
+                    .child("BOOK"),
             )
             .child(
-                Button::new("fs")
-                    .ghost()
-                    .label("Fullscreen")
-                    .on_click(on_fs),
+                h_flex()
+                    .gap_1()
+                    .flex_wrap()
+                    .child(
+                        Button::new("info")
+                            .ghost()
+                            .label("Book info\u{2026}")
+                            .on_click(cx.listener(|v, _, _, cx| {
+                                v.panel = Panel::None;
+                                if let Some(body) = v.book_info_body() {
+                                    v.show_modal("Book info", body, cx);
+                                }
+                            })),
+                    )
+                    .child(
+                        Button::new("validate")
+                            .ghost()
+                            .label("Validate\u{2026}")
+                            .on_click(cx.listener(|v, _, _, cx| {
+                                v.panel = Panel::None;
+                                if let Some(body) = v.validation_body() {
+                                    v.show_modal("Validation", body, cx);
+                                }
+                            })),
+                    )
+                    .child(
+                        Button::new("citations")
+                            .ghost()
+                            .label("Citations\u{2026}")
+                            .on_click(cx.listener(|v, _, _, cx| {
+                                v.panel = Panel::None;
+                                if let Some(body) = v.citations_body() {
+                                    v.show_modal("Citations (BibTeX, APA, MLA, Chicago)", body, cx);
+                                }
+                            })),
+                    )
+                    .child(
+                        Button::new("exportbook")
+                            .ghost()
+                            .label("Export / Convert\u{2026}")
+                            .on_click(cx.listener(|v, _, _, cx| {
+                                v.panel = Panel::None;
+                                v.export_modal = true;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        Button::new("optimizeepub")
+                            .ghost()
+                            .label("Optimize EPUB\u{2026}")
+                            .on_click(cx.listener(|v, _, window, cx| {
+                                v.panel = Panel::None;
+                                v.optimize_epub(window, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new("export")
+                            .ghost()
+                            .label("Export notes\u{2026}")
+                            .on_click(cx.listener(|v, _, window, cx| {
+                                v.panel = Panel::None;
+                                v.export_annotations(window, cx);
+                            })),
+                    ),
+            )
+            .child(div().w_full().h(px(1.0)).bg(palette.border))
+            .child(
+                div()
+                    .text_size(px(11.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(palette.muted)
+                    .child("READING & WINDOW"),
             )
             .child(
-                Button::new("newwin")
-                    .ghost()
-                    .label("New window")
-                    .on_click(cx.listener(|_view, _ev, _window, cx| {
-                        let options = window_options();
-                        cx.open_window(options, |window, cx| {
-                            let view = cx.new(|cx| ReaderView::new(window, cx));
-                            cx.new(|cx| Root::new(view, window, cx))
-                        })
-                        .ok();
-                    })),
+                h_flex()
+                    .gap_1()
+                    .flex_wrap()
+                    .child(
+                        Button::new("copy-act")
+                            .ghost()
+                            .label("Copy selection")
+                            .on_click(on_copy),
+                    )
+                    .child(
+                        Button::new("flow-act")
+                            .ghost()
+                            .label(if self.rtl_mode {
+                                "Flow: RTL"
+                            } else {
+                                "Flow: LTR"
+                            })
+                            .on_click(cx.listener(|v, _, _, cx| {
+                                v.rtl_mode = !v.rtl_mode;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        Button::new("open-act")
+                            .ghost()
+                            .label("Open file\u{2026}")
+                            .on_click(on_open),
+                    )
+                    .child(
+                        Button::new("fs")
+                            .ghost()
+                            .label("Fullscreen")
+                            .on_click(on_fs),
+                    )
+                    .child(
+                        Button::new("newwin")
+                            .ghost()
+                            .label("New window")
+                            .on_click(cx.listener(|_view, _ev, _window, cx| {
+                                let options = window_options();
+                                cx.open_window(options, |window, cx| {
+                                    let view = cx.new(|cx| ReaderView::new(window, cx));
+                                    cx.new(|cx| Root::new(view, window, cx))
+                                })
+                                .ok();
+                            })),
+                    )
+                    .child(
+                        Button::new("sc-modal")
+                            .ghost()
+                            .label("Shortcuts (?)")
+                            .on_click(cx.listener(|v, _, _, cx| {
+                                v.panel = Panel::None;
+                                v.show_shortcuts_modal(cx);
+                            })),
+                    ),
             );
 
         // In-page search bar
@@ -3125,7 +3163,9 @@ impl Render for ReaderView {
                 .gap_2()
                 .px_3()
                 .py_2()
+                .bg(palette.surface)
                 .border_b_1()
+                .border_color(palette.border)
                 .child(div().text_size(px(12.0)).child("Find in chapter:"))
                 .child(Input::new(&self.find_in_page_input).w(px(220.0)))
                 .child(
@@ -3164,10 +3204,50 @@ impl Render for ReaderView {
             div().into_any_element()
         };
 
-        let secondary: AnyElement = match self.panel {
-            Panel::Typography => typography_panel.into_any_element(),
-            Panel::Actions => actions_panel.into_any_element(),
-            Panel::None => div().into_any_element(),
+        let floating_popover: Option<AnyElement> = match self.panel {
+            Panel::Typography => Some(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|v, _, _, cx| {
+                            v.panel = Panel::None;
+                            cx.notify();
+                        }),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .top(px(50.0))
+                            .right(px(12.0))
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .child(typography_popover),
+                    )
+                    .into_any_element(),
+            ),
+            Panel::Actions => Some(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|v, _, _, cx| {
+                            v.panel = Panel::None;
+                            cx.notify();
+                        }),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .top(px(50.0))
+                            .right(px(12.0))
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .child(actions_popover),
+                    )
+                    .into_any_element(),
+            ),
+            Panel::None => None,
         };
 
         let html2 = if self.two_page {
@@ -3229,26 +3309,57 @@ impl Render for ReaderView {
                     }),
             )
         };
-        let content = if self.two_page {
-            h_flex()
-                .min_w(px(0.0))
-                .flex_grow(1.0)
-                .flex_shrink(1.0)
-                .h_full()
-                .overflow_hidden()
-                .child(page("content".to_string(), html.clone()))
-                .child(page("content2".to_string(), html2))
-        } else {
-            div()
-                .min_w(px(0.0))
-                .flex_grow(1.0)
-                .flex_shrink(1.0)
-                .h_full()
-                .overflow_hidden()
-                .flex()
-                .justify_center()
-                .child(page("content".to_string(), html.clone()))
-        };
+        let margin_prev = div().flex().items_center().px_1().child(
+            Button::new("edge-prev")
+                .ghost()
+                .label(if self.rtl_mode {
+                    "\u{203a}"
+                } else {
+                    "\u{2039}"
+                })
+                .tooltip("Previous section (←)")
+                .on_click(cx.listener(|v, _, _, cx| v.prev(cx))),
+        );
+        let margin_next = div().flex().items_center().px_1().child(
+            Button::new("edge-next")
+                .ghost()
+                .label(if self.rtl_mode {
+                    "\u{2039}"
+                } else {
+                    "\u{203a}"
+                })
+                .tooltip("Next section (→)")
+                .on_click(cx.listener(|v, _, _, cx| v.next(cx))),
+        );
+
+        let content = h_flex()
+            .min_w(px(0.0))
+            .flex_grow(1.0)
+            .flex_shrink(1.0)
+            .h_full()
+            .overflow_hidden()
+            .child(margin_prev)
+            .child(if self.two_page {
+                h_flex()
+                    .min_w(px(0.0))
+                    .flex_1()
+                    .h_full()
+                    .overflow_hidden()
+                    .child(page("content".to_string(), html.clone()))
+                    .child(page("content2".to_string(), html2))
+                    .into_any_element()
+            } else {
+                div()
+                    .min_w(px(0.0))
+                    .flex_1()
+                    .h_full()
+                    .overflow_hidden()
+                    .flex()
+                    .justify_center()
+                    .child(page("content".to_string(), html.clone()))
+                    .into_any_element()
+            })
+            .child(margin_next);
 
         let sidebar_w = self.sidebar_width;
         let sidebar_panel = div()
@@ -3271,7 +3382,7 @@ impl Render for ReaderView {
                 ),
             );
 
-        let body = if self.zen_mode {
+        let body = if self.zen_mode || !self.sidebar_open {
             h_flex().flex_1().size_full().min_w(px(0.0)).child(content)
         } else {
             h_flex()
@@ -3290,6 +3401,9 @@ impl Render for ReaderView {
             if key == "escape" {
                 if view.passphrase_modal {
                     view.cancel_passphrase(cx);
+                } else if view.export_modal {
+                    view.export_modal = false;
+                    cx.notify();
                 } else if view.modal.is_some() {
                     view.close_modal(cx);
                 } else if view.show_find_bar {
@@ -3312,16 +3426,7 @@ impl Render for ReaderView {
             if ctrl {
                 match key {
                     "o" => {
-                        if let Some(path) = rfd::FileDialog::new()
-                            .add_filter(
-                                "Ebook",
-                                &[
-                                    "epub", "mobi", "azw3", "fb2", "pdf", "txt", "md", "docx",
-                                    "odt", "rtf", "cbz", "lit", "kfx", "kepub",
-                                ],
-                            )
-                            .pick_file()
-                        {
+                        if let Some(path) = pick_ebook_file() {
                             view.open_file(path, window, cx);
                         }
                     }
@@ -3337,6 +3442,10 @@ impl Render for ReaderView {
                         } else {
                             Panel::Typography
                         };
+                        cx.notify();
+                    }
+                    "\\" => {
+                        view.sidebar_open = !view.sidebar_open;
                         cx.notify();
                     }
                     "l" => {
@@ -3384,18 +3493,22 @@ impl Render for ReaderView {
                     "m" if !view.show_library => view.cycle_theme(cx),
                     "r" if !view.show_library => view.toggle_rtl(cx),
                     "t" if !view.show_library => {
+                        view.sidebar_open = true;
                         view.sidebar_mode = SidebarMode::Contents;
                         cx.notify();
                     }
                     "s" if !view.show_library => {
+                        view.sidebar_open = true;
                         view.sidebar_mode = SidebarMode::Search;
                         cx.notify();
                     }
                     "a" if !view.show_library => {
+                        view.sidebar_open = true;
                         view.sidebar_mode = SidebarMode::Annotations;
                         cx.notify();
                     }
                     "d" if !view.show_library => {
+                        view.sidebar_open = true;
                         view.sidebar_mode = SidebarMode::Dictionary;
                         cx.notify();
                     }
@@ -3405,7 +3518,90 @@ impl Render for ReaderView {
             }
         });
 
-        let overlay: Option<AnyElement> = if let Some(m) = &self.modal {
+        let overlay: Option<AnyElement> = if self.export_modal {
+            const EXPORT_GROUPS: &[(&str, &[(&str, &str)])] = &[
+                (
+                    "E-Readers",
+                    &[
+                        ("EPUB 3", "epub"),
+                        ("Kobo KEPUB", "kepub.epub"),
+                        ("Amazon KFX", "kfx"),
+                        ("Kindle MOBI", "mobi"),
+                        ("Kindle AZW3", "azw3"),
+                    ],
+                ),
+                (
+                    "Documents",
+                    &[
+                        ("PDF", "pdf"),
+                        ("Word DOCX", "docx"),
+                        ("OpenDocument ODT", "odt"),
+                        ("Rich Text RTF", "rtf"),
+                        ("PowerPoint PPTX", "pptx"),
+                        ("FictionBook 2", "fb2"),
+                    ],
+                ),
+                (
+                    "Markup & Web",
+                    &[
+                        ("Markdown", "md"),
+                        ("Plain Text", "txt"),
+                        ("HTML5", "html"),
+                        ("HTMLZ", "htmlz"),
+                        ("TXTZ", "txtz"),
+                        ("OEB Package", "oeb"),
+                        ("ZIP Bundle", "zip"),
+                    ],
+                ),
+                (
+                    "Academic & Technical",
+                    &[
+                        ("LaTeX (.tex)", "tex"),
+                        ("Typst (.typ)", "typ"),
+                        ("AsciiDoc (.adoc)", "adoc"),
+                        ("Org-mode (.org)", "org"),
+                        ("reST (.rst)", "rst"),
+                    ],
+                ),
+                (
+                    "Legacy & AI",
+                    &[
+                        ("PalmDB (.pdb)", "pdb"),
+                        ("PMLZ", "pmlz"),
+                        ("Rocket eBook (.rb)", "rb"),
+                        ("Psion TCR", "tcr"),
+                        ("RAG Chunks (.json)", "json"),
+                    ],
+                ),
+            ];
+            let mut groups_col = v_flex().gap_3();
+            for &(group_name, formats) in EXPORT_GROUPS {
+                let mut row = h_flex().gap_2().flex_wrap();
+                for &(label, ext) in formats {
+                    let lbl = label.to_string();
+                    let ext_s = ext.to_string();
+                    row = row.child(
+                        Button::new(format!("exp-fmt-{ext}"))
+                            .outline()
+                            .label(label)
+                            .on_click(cx.listener(move |v, _, window, cx| {
+                                v.export_book_as(&lbl, &ext_s, window, cx);
+                            })),
+                    );
+                }
+                groups_col = groups_col.child(
+                    v_flex()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_size(px(11.0))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(palette.muted)
+                                .child(group_name.to_uppercase()),
+                        )
+                        .child(row),
+                );
+            }
             Some(
                 div()
                     .absolute()
@@ -3415,6 +3611,93 @@ impl Render for ReaderView {
                     .items_center()
                     .justify_center()
                     .p_6()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|v, _, _, cx| {
+                            v.export_modal = false;
+                            cx.notify();
+                        }),
+                    )
+                    .child(
+                        v_flex()
+                            .w(px(640.0))
+                            .max_h(px(560.0))
+                            .gap_3()
+                            .rounded_lg()
+                            .bg(palette.bg)
+                            .text_color(palette.fg)
+                            .border_1()
+                            .border_color(palette.border)
+                            .p_4()
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .child(
+                                h_flex()
+                                    .justify_between()
+                                    .items_center()
+                                    .child(
+                                        div()
+                                            .text_size(px(16.0))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .child("Export / Convert Book"),
+                                    )
+                                    .child(
+                                        Button::new("exp-modal-x")
+                                            .ghost()
+                                            .label("\u{2715}")
+                                            .tooltip("Close (Esc)")
+                                            .on_click(cx.listener(|v, _, _, cx| {
+                                                v.export_modal = false;
+                                                cx.notify();
+                                            })),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .id("exp-modal-scroll")
+                                    .flex_1()
+                                    .overflow_y_scrollbar()
+                                    .child(groups_col),
+                            )
+                            .child(
+                                h_flex()
+                                    .justify_between()
+                                    .items_center()
+                                    .child(
+                                        Button::new("exp-all-dialog")
+                                            .ghost()
+                                            .label("Custom filename\u{2026}")
+                                            .on_click(cx.listener(|v, _, window, cx| {
+                                                v.export_modal = false;
+                                                v.export_book_dialog(window, cx);
+                                            })),
+                                    )
+                                    .child(
+                                        Button::new("exp-modal-close")
+                                            .ghost()
+                                            .label("Cancel")
+                                            .on_click(cx.listener(|v, _, _, cx| {
+                                                v.export_modal = false;
+                                                cx.notify();
+                                            })),
+                                    ),
+                            ),
+                    )
+                    .into_any_element(),
+            )
+        } else if let Some(m) = &self.modal {
+            Some(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .bg(rgba(0x00000088))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .p_6()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|v, _, _, cx| v.close_modal(cx)),
+                    )
                     .child(
                         v_flex()
                             .w(px(720.0))
@@ -3426,6 +3709,7 @@ impl Render for ReaderView {
                             .border_1()
                             .border_color(palette.border)
                             .p_4()
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                             .child(
                                 h_flex()
                                     .justify_between()
@@ -3488,6 +3772,10 @@ impl Render for ReaderView {
                     .items_center()
                     .justify_center()
                     .p_6()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|v, _, _, cx| v.cancel_passphrase(cx)),
+                    )
                     .child(
                         v_flex()
                             .w(px(420.0))
@@ -3498,6 +3786,7 @@ impl Render for ReaderView {
                             .border_1()
                             .border_color(palette.border)
                             .p_4()
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                             .child(
                                 div()
                                     .text_size(px(16.0))
@@ -3536,7 +3825,75 @@ impl Render for ReaderView {
             format!("{} — {}", status, self.selection_status)
         };
 
-        let mut root = if self.zen_mode && self.modal.is_none() && !self.passphrase_modal {
+        let bottom_bar = v_flex()
+            .w_full()
+            .bg(palette.surface)
+            .border_t_1()
+            .border_color(palette.border)
+            .px_3()
+            .py_1()
+            .gap_1()
+            .child(Progress::new("prog").value(progress))
+            .child(
+                h_flex()
+                    .w_full()
+                    .justify_between()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(palette.muted)
+                            .child(status_line),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .items_center()
+                            .child(
+                                Button::new("prev")
+                                    .ghost()
+                                    .label(if self.rtl_mode {
+                                        "\u{203a}"
+                                    } else {
+                                        "\u{2039}"
+                                    })
+                                    .tooltip("Previous section (←)")
+                                    .on_click(on_prev),
+                            )
+                            .child(
+                                Button::new("pos-jump")
+                                    .ghost()
+                                    .label(format!("{pos} ({progress:.0}%)"))
+                                    .tooltip("Go to section or percentage")
+                                    .on_click(cx.listener(|v, _, _, cx| {
+                                        v.panel = if v.panel == Panel::Actions {
+                                            Panel::None
+                                        } else {
+                                            Panel::Actions
+                                        };
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                Button::new("next")
+                                    .ghost()
+                                    .label(if self.rtl_mode {
+                                        "\u{2039}"
+                                    } else {
+                                        "\u{203a}"
+                                    })
+                                    .tooltip("Next section (→)")
+                                    .on_click(on_next),
+                            ),
+                    ),
+            );
+
+        let mut root = if self.zen_mode
+            && self.modal.is_none()
+            && !self.passphrase_modal
+            && !self.export_modal
+        {
             v_flex()
                 .relative()
                 .size_full()
@@ -3573,27 +3930,17 @@ impl Render for ReaderView {
                 .text_color(fg)
                 .on_key_down(on_key)
                 .child(header)
-                .child(secondary)
                 .child(find_bar)
                 .child(body)
-                .child(
-                    v_flex()
-                        .w_full()
-                        .bg(palette.surface)
-                        .border_t_1()
-                        .border_color(palette.border)
-                        .px_3()
-                        .py_1()
-                        .gap_1()
-                        .child(Progress::new("prog").value(progress))
-                        .child(
-                            div()
-                                .text_size(px(11.0))
-                                .text_color(palette.muted)
-                                .child(status_line),
-                        ),
-                )
+                .child(bottom_bar)
         };
+
+        if let Some(pop) = floating_popover
+            && !self.zen_mode
+            && overlay.is_none()
+        {
+            root = root.child(pop);
+        }
 
         if let Some(ov) = overlay {
             root = root.child(ov);

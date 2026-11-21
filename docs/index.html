@@ -407,7 +407,7 @@ footer p { margin: 0 0 8px; }
   <div class="hero">
     <div class="hero-top">
       <p class="hero-label">A lightweight ebook reader · written in pure Rust</p>
-      <a class="ver-pill" id="ver-pill" href="https://github.com/SV-stark/eParna/releases/latest">Latest: v0.8.2</a>
+      <a class="ver-pill" id="ver-pill" href="https://github.com/SV-stark/eParna/releases/latest">Latest: v0.9.0</a>
     </div>
     <div class="hero-brand">
       <img class="hero-logo" src="./assets/icon.png" alt="eParna logo">
@@ -515,14 +515,14 @@ footer p { margin: 0 0 8px; }
       <div class="card"><div class="ic"><svg viewBox="0 0 24 24"><path d="M9 11l3 3L22 4M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></div><h3>Highlights &amp; notes</h3><p>Select, copy and save passages. Click any note to jump back to it, or export everything as Markdown.</p></div>
       <div class="card"><div class="ic"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg></div><h3>Full-text search</h3><p>Find anything in a book with snippets, jump-to-result, regex mode and a configurable result cap.</p></div>
       <div class="card"><div class="ic"><svg viewBox="0 0 24 24"><path d="M4 4h16v16H4zM9 4v16M15 4v16"/></svg></div><h3>TOC &amp; bookmarks</h3><p>Jump to any chapter through a hierarchical table of contents with deep search and breadcrumbs.</p></div>
-      <div class="card"><div class="ic"><svg viewBox="0 0 24 24"><path d="M12 3v18M3 12h18M5 5l14 14M19 5 5 19"/></svg></div><h3>Typography panel</h3><p>Labelled steppers for font size, line height, margin and text width, plus typeface, theme and one/two-page toggles.</p></div>
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24"><path d="M12 3v18M3 12h18M5 5l14 14M19 5 5 19"/></svg></div><h3>Floating typography &amp; themes</h3><p>One-click theme swatches, font/margin/width/WPM steppers, and a collapsible sidebar that never shifts your page.</p></div>
       <div class="card"><div class="ic"><svg viewBox="0 0 24 24"><path d="M20 15a4 4 0 0 0-4-4H6a4 4 0 0 0 0 8h10a4 4 0 0 0 4-4zM6 7h12"/></svg></div><h3>Offline dictionaries</h3><p>Look up words with StarDict dictionaries, or search Wikipedia — without leaving the book.</p></div>
       <div class="card"><div class="ic"><svg viewBox="0 0 24 24"><path d="M12 2 2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg></div><h3>Every format</h3><p>EPUB, MOBI, AZW3, KFX, PDF, FB2, CBZ, DOCX and more — detected automatically from file contents.</p></div>
       <div class="card"><div class="ic"><svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div><h3>Private by default</h3><p>Reading is fully offline. Recent books, notes and settings stay on your device — nothing is uploaded.</p></div>
       <div class="card"><div class="ic"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M8 4v16"/></svg></div><h3>OPDS catalogues</h3><p>Browse and download books from OPDS feeds, then open them straight into the reader.</p></div>
       <div class="card"><div class="ic"><svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></div><h3>Footnotes &amp; lightbox</h3><p>Inline footnote popups, cross-document links and a full-size image lightbox keep the book intact.</p></div>
       <div class="card"><div class="ic"><svg viewBox="0 0 24 24"><path d="M12 8v4l3 3M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z"/></svg></div><h3>Reliable resume</h3><p>Position is stored as a Readium CFI, returning you to the same passage even after re-conversion.</p></div>
-      <div class="card"><div class="ic"><svg viewBox="0 0 24 24"><path d="M5 3v18l9-9-9-9zM14 3v18"/></svg></div><h3>Export &amp; citations</h3><p>Convert any book to EPUB 3, KFX, or plain text, validate structure, and copy BibTeX/APA/MLA/Chicago citations.</p></div>
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24"><path d="M5 3v18l9-9-9-9zM14 3v18"/></svg></div><h3>Export, optimize &amp; citations</h3><p>Convert any book across 21+ formats (EPUB 3, KEPUB, KFX, MOBI, AZW3, PDF, DOCX, Markdown &amp; RAG JSON), optimize EPUBs, validate structure, and copy BibTeX/APA/MLA/Chicago citations.</p></div>
     </div>
   </section>
 
@@ -533,8 +533,11 @@ footer p { margin: 0 0 8px; }
       <span class="pill">EPUB 2 / 3</span><span class="pill">KEPUB</span><span class="pill">KFX</span>
       <span class="pill">MOBI</span><span class="pill">AZW3</span><span class="pill">FB2</span>
       <span class="pill">LIT</span><span class="pill">CBZ</span><span class="pill">PDF</span>
-      <span class="pill">ODT</span><span class="pill">DOCX</span><span class="pill">RTF</span>
-      <span class="pill">TXT</span><span class="pill">Markdown</span>
+      <span class="pill">ODT</span><span class="pill">DOCX</span><span class="pill">PPTX</span>
+      <span class="pill">RTF</span><span class="pill">HTML / HTMLZ</span><span class="pill">OEB / OPF</span>
+      <span class="pill">PDB / PMLZ</span><span class="pill">RB / TCR</span><span class="pill">TXT / TXTZ</span>
+      <span class="pill">Markdown</span><span class="pill">Typst</span><span class="pill">AsciiDoc</span>
+      <span class="pill">Org-mode</span><span class="pill">reST</span><span class="pill">LaTeX</span>
     </div>
 
     <div class="proof">
@@ -542,7 +545,7 @@ footer p { margin: 0 0 8px; }
       <div class="proof-grid">
         <div>
           <p class="stat-label">Formats supported</p>
-          <p class="stat-big"><strong>14+</strong><span>auto-detected</span></p>
+          <p class="stat-big"><strong>25+</strong><span>auto-detected</span></p>
           <div class="bar"><i class="green" style="width:92%"></i></div>
         </div>
         <div>
@@ -579,6 +582,7 @@ footer p { margin: 0 0 8px; }
 <span class="k">Ctrl+B</span> Toggle bookmark
 <span class="k">Ctrl+C</span> Copy selected text
 <span class="k">Ctrl+L</span> Back to the library
+<span class="k">Ctrl+\</span> Toggle sidebar
 <span class="k">Z / Esc</span> Toggle or exit Zen mode
 </div><div>
 <span class="k">→ / Space</span> Next section
@@ -613,7 +617,7 @@ footer p { margin: 0 0 8px; }
       <table>
         <thead><tr><th>Crate</th><th>Purpose</th></tr></thead>
         <tbody>
-          <tr><td>ebook-rs</td><td>Multi-format parsing, search, TOC, covers, validation, EPUB/KFX export</td></tr>
+          <tr><td>ebook-rs</td><td>Multi-format parsing &amp; 21+ format export, search, TOC, covers, validation, EPUB optimizer &amp; analytics</td></tr>
           <tr><td>gpui-kit</td><td>GPU-accelerated native UI (powered by gpui-fast)</td></tr>
           <tr><td>rfd</td><td>Native file dialogs</td></tr>
           <tr><td>serde / serde_json</td><td>State and annotation serialization</td></tr>

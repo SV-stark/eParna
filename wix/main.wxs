@@ -186,6 +186,20 @@
                 <RegistryValue Root='HKLM' Key='Software\Classes\Applications\eparna.exe\SupportedTypes' Name='.lit' Type='string' Value=''/>
                 <RegistryValue Root='HKLM' Key='Software\Classes\Applications\eparna.exe\SupportedTypes' Name='.kfx' Type='string' Value=''/>
                 <RegistryValue Root='HKLM' Key='Software\Classes\Applications\eparna.exe\SupportedTypes' Name='.kepub' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\Applications\eparna.exe\SupportedTypes' Name='.htmlz' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\Applications\eparna.exe\SupportedTypes' Name='.txtz' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\Applications\eparna.exe\SupportedTypes' Name='.oeb' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\Applications\eparna.exe\SupportedTypes' Name='.opf' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\Applications\eparna.exe\SupportedTypes' Name='.pdb' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\Applications\eparna.exe\SupportedTypes' Name='.pmlz' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\Applications\eparna.exe\SupportedTypes' Name='.rb' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\Applications\eparna.exe\SupportedTypes' Name='.tcr' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\Applications\eparna.exe\SupportedTypes' Name='.pptx' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\Applications\eparna.exe\SupportedTypes' Name='.typ' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\Applications\eparna.exe\SupportedTypes' Name='.adoc' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\Applications\eparna.exe\SupportedTypes' Name='.org' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\Applications\eparna.exe\SupportedTypes' Name='.rst' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\Applications\eparna.exe\SupportedTypes' Name='.tex' Type='string' Value=''/>
 
                 <!-- Default Apps Capabilities registration -->
                 <RegistryValue Root='HKLM' Key='Software\RegisteredApplications' Name='eParna' Type='string' Value='Software\SV-stark\eparna\Capabilities' KeyPath='yes'/>
@@ -205,6 +219,20 @@
                 <RegistryValue Root='HKLM' Key='Software\SV-stark\eparna\Capabilities\FileAssociations' Name='.lit' Type='string' Value='eParna.Document'/>
                 <RegistryValue Root='HKLM' Key='Software\SV-stark\eparna\Capabilities\FileAssociations' Name='.kfx' Type='string' Value='eParna.Document'/>
                 <RegistryValue Root='HKLM' Key='Software\SV-stark\eparna\Capabilities\FileAssociations' Name='.kepub' Type='string' Value='eParna.Document'/>
+                <RegistryValue Root='HKLM' Key='Software\SV-stark\eparna\Capabilities\FileAssociations' Name='.htmlz' Type='string' Value='eParna.Document'/>
+                <RegistryValue Root='HKLM' Key='Software\SV-stark\eparna\Capabilities\FileAssociations' Name='.txtz' Type='string' Value='eParna.Document'/>
+                <RegistryValue Root='HKLM' Key='Software\SV-stark\eparna\Capabilities\FileAssociations' Name='.oeb' Type='string' Value='eParna.Document'/>
+                <RegistryValue Root='HKLM' Key='Software\SV-stark\eparna\Capabilities\FileAssociations' Name='.opf' Type='string' Value='eParna.Document'/>
+                <RegistryValue Root='HKLM' Key='Software\SV-stark\eparna\Capabilities\FileAssociations' Name='.pdb' Type='string' Value='eParna.Document'/>
+                <RegistryValue Root='HKLM' Key='Software\SV-stark\eparna\Capabilities\FileAssociations' Name='.pmlz' Type='string' Value='eParna.Document'/>
+                <RegistryValue Root='HKLM' Key='Software\SV-stark\eparna\Capabilities\FileAssociations' Name='.rb' Type='string' Value='eParna.Document'/>
+                <RegistryValue Root='HKLM' Key='Software\SV-stark\eparna\Capabilities\FileAssociations' Name='.tcr' Type='string' Value='eParna.Document'/>
+                <RegistryValue Root='HKLM' Key='Software\SV-stark\eparna\Capabilities\FileAssociations' Name='.pptx' Type='string' Value='eParna.Document'/>
+                <RegistryValue Root='HKLM' Key='Software\SV-stark\eparna\Capabilities\FileAssociations' Name='.typ' Type='string' Value='eParna.Document'/>
+                <RegistryValue Root='HKLM' Key='Software\SV-stark\eparna\Capabilities\FileAssociations' Name='.adoc' Type='string' Value='eParna.Document'/>
+                <RegistryValue Root='HKLM' Key='Software\SV-stark\eparna\Capabilities\FileAssociations' Name='.org' Type='string' Value='eParna.Document'/>
+                <RegistryValue Root='HKLM' Key='Software\SV-stark\eparna\Capabilities\FileAssociations' Name='.rst' Type='string' Value='eParna.Document'/>
+                <RegistryValue Root='HKLM' Key='Software\SV-stark\eparna\Capabilities\FileAssociations' Name='.tex' Type='string' Value='eParna.Document'/>
 
                 <!-- OpenWithProgids (adds eParna to Open With without hijacking existing defaults) -->
                 <RegistryValue Root='HKLM' Key='Software\Classes\.epub\OpenWithProgids' Name='eParna.Document' Type='string' Value=''/>
@@ -221,6 +249,20 @@
                 <RegistryValue Root='HKLM' Key='Software\Classes\.lit\OpenWithProgids' Name='eParna.Document' Type='string' Value=''/>
                 <RegistryValue Root='HKLM' Key='Software\Classes\.kfx\OpenWithProgids' Name='eParna.Document' Type='string' Value=''/>
                 <RegistryValue Root='HKLM' Key='Software\Classes\.kepub\OpenWithProgids' Name='eParna.Document' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\.htmlz\OpenWithProgids' Name='eParna.Document' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\.txtz\OpenWithProgids' Name='eParna.Document' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\.oeb\OpenWithProgids' Name='eParna.Document' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\.opf\OpenWithProgids' Name='eParna.Document' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\.pdb\OpenWithProgids' Name='eParna.Document' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\.pmlz\OpenWithProgids' Name='eParna.Document' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\.rb\OpenWithProgids' Name='eParna.Document' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\.tcr\OpenWithProgids' Name='eParna.Document' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\.pptx\OpenWithProgids' Name='eParna.Document' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\.typ\OpenWithProgids' Name='eParna.Document' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\.adoc\OpenWithProgids' Name='eParna.Document' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\.org\OpenWithProgids' Name='eParna.Document' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\.rst\OpenWithProgids' Name='eParna.Document' Type='string' Value=''/>
+                <RegistryValue Root='HKLM' Key='Software\Classes\.tex\OpenWithProgids' Name='eParna.Document' Type='string' Value=''/>
             </Component>
         </DirectoryRef>
 

@@ -15,7 +15,8 @@ Built on [ebook-rs](https://crates.io/crates/ebook-rs) for multi-format parsing 
 ## Features
 
 - **Multi-format support** — EPUB 2/3, KEPUB, KFX, MOBI, AZW3, FB2, LIT, CBZ, PDF,
-  ODT, DOCX, RTF, TXT and Markdown, detected automatically from file contents.
+  ODT, DOCX, PPTX, RTF, HTML/HTMLZ, TXT/TXTZ, OEB/OPF, PDB, PMLZ, RB, TCR, Markdown,
+  Typst, AsciiDoc, Org-mode, reStructuredText, and LaTeX, detected automatically from file contents.
 - **Text selection** — drag to select, `Ctrl+C` (or **Copy**) to copy the
   selection, and **Highlight** to save it.
 - **Highlights & notes** — highlights capture the quoted passage; notes quote
@@ -37,13 +38,17 @@ Built on [ebook-rs](https://crates.io/crates/ebook-rs) for multi-format parsing 
   mode, and a configurable result cap.
 - **Book info** — author, publisher, language, dates, subjects, identifier, rights
   and description, plus a structural validation report.
-- **Save as EPUB** — convert any supported format to a clean EPUB 3 file.
-- **Themes** — Light, Dark, and Sepia.
-- **Typography & layout** — a dedicated **Aa** panel with labelled `− value +`
-  steppers for font size, line height, margin and text width, plus typeface,
-  theme and one/two-page toggles and "Reset to defaults"; a **⋯** panel holds
-  the long-tail actions (book info, validation, Save as EPUB, note export,
-  go-to-section, fullscreen, new window).
+- **Multi-format Export / Convert & EPUB 3 Optimizer** — convert any supported book to
+  21+ output formats (EPUB 3, KEPUB, KFX, MOBI, AZW3, PDF, DOCX, ODT, RTF, PPTX, FB2, HTML5,
+  Markdown, TXT, LaTeX, Typst, AsciiDoc, Org, RST, HTMLZ, TXTZ, OEB, PDB, PMLZ, RB, TCR) or
+  RAG Chunks JSON, and losslessly optimize EPUB 3 packages (asset deduplication & CSS purging).
+- **Themes** — Light, Sepia, Dark, OLED Black, Nord, Solarized, Solarized Dark, E-Ink, and Custom.
+- **Typography, floating popovers & collapsible sidebar** — a floating **Aa**
+  popover with 1-click theme swatches and labelled steppers for font size, line
+  height, margin, text width, and reading speed (WPM), plus typeface, alignment,
+  and one/two-page toggles; a floating **⋯** popover for book info, validation,
+  citations, categorized 21+ format export, EPUB 3 optimization, note export,
+  go-to-section, fullscreen, and new window; and a collapsible sidebar (`Ctrl+\`).
 - **Footnotes** — click a footnote reference to pop up the note inline; cross-document links navigate to the target section.
 - **Dictionary & Wikipedia** — look up a word or topic without leaving the book. Offline **StarDict** dictionaries (`.ifo`/`.idx`/`.dict`) are also supported.
 - **Image lightbox** — click any image in the reading view to view it full-size.
@@ -84,7 +89,7 @@ Prebuilt artifacts are attached to every [GitHub Release](https://github.com/SV-
 | Windows x64 | `eparna-x86_64-pc-windows-msvc.zip` | Portable build, no install needed |
 | macOS (Apple Silicon) | `eparna-aarch64-apple-darwin.pkg` | Double-click installer |
 | macOS (Intel) | `eparna-x86_64-apple-darwin.pkg` | Double-click installer |
-| Linux x64 | `eparna_0.8.1_x86_64.AppImage` | Single file; `chmod +x` and run |
+| Linux x64 | `eparna_0.9.0_x86_64.AppImage` | Single file; `chmod +x` and run |
 | Any | `eparna-installer.sh` / `eparna-installer.ps1` | `curl \| sh` / `irm \| iex` |
 
 Or install with the one-liner scripts:
@@ -167,6 +172,10 @@ Or launch without arguments and use the **Open** button to pick a file.
 | `Ctrl+B` | Toggle bookmark on the current section |
 | `Ctrl+C` | Copy the selected text |
 | `Ctrl+L` | Back to the library |
+| `Ctrl+\` | Toggle sidebar |
+| `P` / `Ctrl+P` | Toggle Typography & themes popover |
+| `Z` | Toggle Zen / distraction-free mode |
+| `Alt+←` / `Backspace` | Jump back in navigation history |
 | `→` / `PageDown` / `Space` | Next section |
 | `←` / `PageUp` | Previous section |
 | `Home` / `End` | First / last section |
@@ -272,8 +281,8 @@ eParna/
 
 | Crate     | Version | Purpose                          |
 |-----------|---------|----------------------------------|
-| ebook-rs  | 0.18.0  | Ebook parsing, search, TOC, covers, validation, EPUB & KFX export, citations |
-| gpui-kit  | 0.9.0   | UI framework & components (powered by gpui-fast) |
+| ebook-rs  | 0.19.0  | Multi-format parsing & 21+ format export, search, TOC, covers, validation, EPUB optimizer, analytics, citations |
+| gpui-kit  | 0.10.0  | UI framework & components (powered by gpui-fast) |
 | rfd       | 0.17    | Native file dialogs              |
 | serde     | 1       | State serialization              |
 | serde_json| 1       | State (de)serialization          |

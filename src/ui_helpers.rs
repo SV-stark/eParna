@@ -17,6 +17,95 @@ pub struct ThemePalette {
     pub muted: Hsla,
 }
 
+pub const THEME_PRESETS: &[(&str, &str)] = &[
+    ("Light", "Light"),
+    ("Sepia", "Sepia"),
+    ("Dark", "Dark"),
+    ("OLED Black", "OLED"),
+    ("Nord", "Nord"),
+    ("Solarized", "Solarized"),
+    ("Solarized Dark", "Sol. Dark"),
+    ("E-Ink", "E-Ink"),
+    ("Custom", "Custom"),
+];
+
+pub fn highlight_swatch_color(color: &str) -> Hsla {
+    match color {
+        "green" => rgb(0x4caf50).into(),
+        "blue" => rgb(0x2196f3).into(),
+        "pink" => rgb(0xe91e63).into(),
+        "purple" => rgb(0x9c27b0).into(),
+        _ => rgb(0xffd54f).into(),
+    }
+}
+
+pub fn highlight_dot(
+    id: String,
+    color: &str,
+    selected: bool,
+    ring_color: Hsla,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> AnyElement {
+    let swatch = highlight_swatch_color(color);
+    let mut outer = div()
+        .id(id)
+        .w(px(22.0))
+        .h(px(22.0))
+        .rounded_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .border_2()
+        .border_color(if selected {
+            ring_color
+        } else {
+            rgba(0x00000000).into()
+        })
+        .on_click(on_click);
+    outer = outer.child(div().w(px(14.0)).h(px(14.0)).rounded_full().bg(swatch));
+    outer.into_any_element()
+}
+
+pub fn theme_swatch(
+    id: String,
+    short_label: &str,
+    swatch_palette: ThemePalette,
+    selected: bool,
+    accent_border: Hsla,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> AnyElement {
+    v_flex()
+        .id(id)
+        .w(px(98.0))
+        .px_2()
+        .py_1()
+        .gap_1()
+        .items_center()
+        .rounded_md()
+        .bg(swatch_palette.bg)
+        .text_color(swatch_palette.fg)
+        .border_2()
+        .border_color(if selected {
+            accent_border
+        } else {
+            swatch_palette.border
+        })
+        .on_click(on_click)
+        .child(
+            div()
+                .text_size(px(13.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child("Aa"),
+        )
+        .child(
+            div()
+                .text_size(px(10.0))
+                .text_color(swatch_palette.muted)
+                .child(short_label.to_string()),
+        )
+        .into_any_element()
+}
+
 pub fn is_dark_theme(theme: &str) -> bool {
     matches!(theme, "Dark" | "OLED Black" | "Nord" | "Solarized Dark")
 }
@@ -176,7 +265,12 @@ pub struct BookTileMeta {
     pub pct: f32,
 }
 
-pub fn grid_tile(meta: BookTileMeta, palette: ThemePalette, actions: AnyElement) -> AnyElement {
+pub fn grid_tile(
+    meta: BookTileMeta,
+    palette: ThemePalette,
+    on_open: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    actions: AnyElement,
+) -> AnyElement {
     let BookTileMeta {
         id,
         cover,
@@ -193,33 +287,45 @@ pub fn grid_tile(meta: BookTileMeta, palette: ThemePalette, actions: AnyElement)
         .bg(palette.surface)
         .border_1()
         .border_color(palette.border)
-        .child(cover_art(
-            format!("{id}-c"),
-            cover,
-            &title,
-            &format,
-            palette,
-            144.0,
-            196.0,
-        ))
+        .hover(|s| s.border_color(palette.muted))
         .child(
-            div()
-                .text_size(px(13.0))
-                .font_weight(FontWeight::MEDIUM)
-                .child(truncate(&title, 32)),
+            v_flex()
+                .id(format!("{id}-body"))
+                .gap_2()
+                .on_click(on_open)
+                .child(cover_art(
+                    format!("{id}-c"),
+                    cover,
+                    &title,
+                    &format,
+                    palette,
+                    144.0,
+                    196.0,
+                ))
+                .child(
+                    div()
+                        .text_size(px(13.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(truncate(&title, 32)),
+                )
+                .child(
+                    div()
+                        .text_size(px(11.0))
+                        .text_color(palette.muted)
+                        .child(truncate(&subtitle, 36)),
+                )
+                .child(Progress::new(format!("{id}-p")).value(pct)),
         )
-        .child(
-            div()
-                .text_size(px(11.0))
-                .text_color(palette.muted)
-                .child(truncate(&subtitle, 36)),
-        )
-        .child(Progress::new(format!("{id}-p")).value(pct))
         .child(actions)
         .into_any_element()
 }
 
-pub fn wide_tile(meta: BookTileMeta, palette: ThemePalette, actions: AnyElement) -> AnyElement {
+pub fn wide_tile(
+    meta: BookTileMeta,
+    palette: ThemePalette,
+    on_open: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    actions: AnyElement,
+) -> AnyElement {
     let BookTileMeta {
         id,
         cover,
@@ -236,15 +342,21 @@ pub fn wide_tile(meta: BookTileMeta, palette: ThemePalette, actions: AnyElement)
         .bg(palette.surface)
         .border_1()
         .border_color(palette.border)
-        .child(cover_art(
-            format!("{id}-c"),
-            cover,
-            &title,
-            &format,
-            palette,
-            72.0,
-            100.0,
-        ))
+        .hover(|s| s.border_color(palette.muted))
+        .child(
+            div()
+                .id(format!("{id}-cov"))
+                .on_click(on_open)
+                .child(cover_art(
+                    format!("{id}-c"),
+                    cover,
+                    &title,
+                    &format,
+                    palette,
+                    72.0,
+                    100.0,
+                )),
+        )
         .child(
             v_flex()
                 .flex_1()

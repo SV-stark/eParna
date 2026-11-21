@@ -6,6 +6,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-21
+
+### Added
+- **Expanded Input Format Support (`ebook-rs` `v0.19.0`)**: Added file-picker, folder-scan, and Windows "Open with" support for HTML/XHTML, HTMLZ, TXTZ, OEB/OPF packages (including OEB directories), ZIP ebook bundles, PalmDB/PalmDOC/zTXT (`.pdb`), PMLZ, Rocket eBook (`.rb`), Psion TCR (`.tcr`), PowerPoint (`.pptx`), Typst (`.typ`/`.typst`), AsciiDoc (`.adoc`/`.asciidoc`), Org-mode (`.org`), reStructuredText (`.rst`), and LaTeX (`.tex`/`.latex`).
+- **Unified Multi-Format Export / Convert (`Export / Convert…`)**: Replaced separate EPUB/KFX/TXT buttons with a categorized **Export / Convert Book** modal and unified save flow supporting all 21+ `ebook-rs` 0.19.0 output formats (EPUB 3, Kobo KEPUB, KFX, MOBI, AZW3, PDF, Markdown, TXT, HTML5, DOCX, ODT, RTF, FB2, PPTX, LaTeX, Typst, AsciiDoc, Org-mode, reStructuredText, HTMLZ, TXTZ, OEB, ZIP, PDB, PMLZ, RB, TCR) plus AI/RAG Chunks JSON (`.json`).
+- **Lossless EPUB 3 Optimizer (`Optimize EPUB…`)**: Added one-click EPUB 3 optimization via `EpubOptimizer` that deduplicates assets, minifies HTML, purges unused CSS rules, and reports bytes saved.
+- **Richer Book Info Modal**: Added Readium location counts, section reading analytics (word count, estimated reading time, difficulty score, top keywords), EPUB accessibility metadata, and content fingerprint hash.
+- **Reader & Library UI Redesign**:
+  - Made the reader sidebar collapsible (`Ctrl+\` or header `Sidebar` toggle, closed by default on book open; `t`/`s`/`a`/`d` auto-open the sidebar to the chosen tab).
+  - Decluttered the reader header (showing book + current chapter title) and converted `Aa` (Typography) and `⋯` (Actions) into top-right floating popovers with click-outside dismissal so toggling them no longer shifts reading text.
+  - Added 1-click visual theme swatches in the Typography popover and circular highlight color dots in the header and Annotations sidebar.
+  - Added left/right margin section navigation arrows and an interactive bottom reading bar with clickable section/percentage jump.
+  - Added click-outside backdrop dismissal to Export, Book Info/Citations/Validation/Lightbox, and Passphrase modals.
+  - Made library grid cards, Continue Reading tiles, and list rows click-anywhere to open/resume with subtle hover borders and restrained secondary actions.
+
+### Changed & Improved
+- **Upgraded `ebook-rs` to `v0.19.0`** (from `v0.18.5`):
+  - Gains upstream pure-Rust multi-format input/output codecs, `Book::export_format_bytes`, `Book::supported_output_formats`, KFX bidi/font-family/embedded-font/cover fidelity fixes (`0.18.6`–`0.18.7`), and OEB directory loading.
+  - Added `detect_format_label` (`src/library.rs`) to label OEB directories as `oeb` and `.kepub.epub` files as `kepub`.
+- **Dependency Graph Update**: Ran `cargo update` locking 36 crates to their highest Rust 1.90 compatible releases (including `gpui-fast 0.1.17`, `zip 9.8.1`, `zbus 6.5.0`, `regex 1.13.2`).
+
 ## [0.8.2] - 2026-11-16
 
 ### Added
