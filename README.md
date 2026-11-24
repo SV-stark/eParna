@@ -21,13 +21,10 @@ Built on [ebook-rs](https://crates.io/crates/ebook-rs) for multi-format parsing 
   selection, and **Highlight** to save it.
 - **Highlights & notes** — highlights capture the quoted passage; notes quote
   whatever is selected. Click any entry to jump back to it. Export as Markdown.
-- **Library view** — a cover-forward grid of books with a "Continue reading" row
-  for works in progress; each tile shows cover, title, author and format with a
-  progress bar and Open/Resume, favourite and remove actions. Filtering, sorting
-  and one-click reopen included.
+- **Library view** — a cover-forward grid of books (caching covers up to 3 MiB, including SVG) with a "Continue reading" row for works in progress; each tile shows cover, title, author and format with a progress bar and Open/Resume, favourite and remove actions. Filtering, sorting, one-click reopen, and an **About eParna** dialog (click logo/title) included.
 - **Deduplication** — the same book opened from another path updates the existing
   entry (content-hash based) instead of adding a duplicate.
-- **GPU-accelerated rendering** — smooth scrolling and responsive navigation powered by `gpui-kit` with `gpui-fast` layout and rendering optimizations.
+- **Custom GPU-accelerated eBook renderer** — walks `EbookDomTree` directly into GPUI `div()` elements with `gpui-fast`, preserving publisher CSS borders, padding, margins, backgrounds, tables, lists, alignment, cross-block text selection, and clickable footnotes/links.
 - **Inlined assets** — images and resources are embedded (base64) by ebook-rs, so sections render offline.
 - **Table of contents** — jump to any chapter via the Contents selector, or deep-search
   the TOC by title with breadcrumbs.
@@ -39,9 +36,10 @@ Built on [ebook-rs](https://crates.io/crates/ebook-rs) for multi-format parsing 
 - **Book info** — author, publisher, language, dates, subjects, identifier, rights
   and description, plus a structural validation report.
 - **Multi-format Export / Convert & EPUB 3 Optimizer** — convert any supported book to
-  21+ output formats (EPUB 3, KEPUB, KFX, MOBI, AZW3, PDF, DOCX, ODT, RTF, PPTX, FB2, HTML5,
+  22+ output formats (EPUB 3, KEPUB, KFX, MOBI, AZW3, LIT, PDF, DOCX, ODT, RTF, PPTX, FB2, HTML5,
   Markdown, TXT, LaTeX, Typst, AsciiDoc, Org, RST, HTMLZ, TXTZ, OEB, PDB, PMLZ, RB, TCR) or
   RAG Chunks JSON, and losslessly optimize EPUB 3 packages (asset deduplication & CSS purging).
+- **OS Built-in Text-to-Speech (TTS)** — read aloud the current section or selected passage using your OS speech engine (`V` shortcut or **Speak** button) with `0.5x`–`2.5x` speed control.
 - **Themes** — Light, Sepia, Dark, OLED Black, Nord, Solarized, Solarized Dark, E-Ink, and Custom.
 - **Typography, floating popovers & collapsible sidebar** — a floating **Aa**
   popover with 1-click theme swatches and labelled steppers for font size, line
@@ -58,7 +56,7 @@ Built on [ebook-rs](https://crates.io/crates/ebook-rs) for multi-format parsing 
 - **LCP/DRM passphrase** — protected books can be opened by entering a passphrase.
 - **OPDS catalogues** — browse and download from OPDS feeds.
 - **Multiple windows** — open additional reader windows.
-- **Reading progress** — progress bar, percentage, and `n/total` section indicator.
+- **Interactive reading progress scrubber** — click-and-drag scrubber bar with chapter boundary ticks, hover preview (`Sec X/Y · %`), live intra-chapter scroll tracking, and remaining chapter/book reading time.
 - **Fullscreen** — toggle fullscreen reading.
 - **Native file dialog** — open books through a platform file picker, or pass a path on the command line.
 - **State persistence** — recent books, annotations, and settings saved between sessions.
@@ -284,6 +282,7 @@ eParna/
 | ebook-rs  | 0.19.3  | Multi-format parsing & 22+ format export, search, TOC, covers, validation, EPUB optimizer, analytics, citations |
 | gpui-kit  | 0.10.0  | UI framework & components (powered by gpui-fast) |
 | rfd       | 0.17    | Native file dialogs              |
+| tts       | 0.26    | OS built-in Text-to-Speech       |
 | serde     | 1       | State serialization              |
 | serde_json| 1       | State (de)serialization          |
 | ureq      | 3       | OPDS catalogs & online lookups   |
