@@ -16,7 +16,7 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants},
     input::{Input, InputState},
     progress::Progress,
-    scroll::ScrollableElement,
+    scroll::{ScrollableElement, Scrollbar},
     select::{Select, SelectEvent, SelectState},
     text::TextView,
     theme::{Theme, ThemeMode},
@@ -34,7 +34,9 @@ use crate::html_utils::*;
 use crate::library::*;
 use crate::models::*;
 use crate::network::*;
-use crate::renderer::{ImageCache, RenderConfig, render_ebook_dom};
+use crate::renderer::{
+    ImageCache, ProgressScrubber, RenderConfig, is_palette_dark, render_ebook_dom,
+};
 use crate::stardict::StarDict;
 use crate::ui_helpers::*;
 
@@ -83,6 +85,7 @@ struct ReaderView {
     margin: f32,
     max_width: f32,
     justify: bool,
+    text_align: String,
     font_family: String,
     two_page: bool,
     theme: String,
@@ -108,6 +111,7 @@ struct ReaderView {
     toc_search_input: Entity<InputState>,
     toc_matches: Vec<(String, String, usize)>,
     covers: HashMap<String, String>,
+    covers_backfilled: bool,
 
     selection_status: String,
     reading_start: std::time::Instant,
@@ -145,6 +149,10 @@ struct ReaderView {
     // Per-section / per-column cached render state
     cached_word_count: usize,
     cached_progress: f32,
+    section_start_pct: f32,
+    section_end_pct: f32,
+    chapter_ticks: Vec<f32>,
+    scroll_handle: ScrollHandle,
     cached_constrained_html: String,
     cached_column_px: f32,
     cached_dom: Option<ebook_rs::EbookDomTree>,
@@ -158,6 +166,11 @@ struct ReaderView {
     sidebar_width: f32,
     export_modal: bool,
     synced_dark_mode: Option<bool>,
+    focus_handle: FocusHandle,
+    tts_engine: Option<tts::Tts>,
+    tts_speaking: bool,
+    tts_rate: f32,
+    tts_text: String,
 }
 
 impl ReaderView {
@@ -166,6 +179,28 @@ impl ReaderView {
     }
 
     fn load_covers(&mut self) {
+        if !self.covers_backfilled {
+            self.covers_backfilled = true;
+            let mut updated = false;
+            for r in &mut self.state.recent {
+                if !r.cover.is_empty() {
+                    continue;
+                }
+                let book_path = PathBuf::from(&r.path);
+                if book_path.exists()
+                    && let Ok(book) = ebook_rs::Book::from_file(&book_path)
+                {
+                    let c = cache_cover_to_disk(&book, &r.path);
+                    if !c.is_empty() {
+                        r.cover = c;
+                        updated = true;
+                    }
+                }
+            }
+            if updated {
+                self.save_state();
+            }
+        }
         for r in &self.state.recent {
             if r.cover.is_empty() || self.covers.contains_key(&r.cover) {
                 continue;
@@ -180,6 +215,7 @@ impl ReaderView {
                 "gif" => "image/gif",
                 "webp" => "image/webp",
                 "bmp" => "image/bmp",
+                "svg" => "image/svg+xml",
                 _ => "image/png",
             };
             let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
@@ -213,6 +249,7 @@ impl ReaderView {
         self.state.margin = self.margin;
         self.state.max_width = self.max_width;
         self.state.justify = self.justify;
+        self.state.text_align = self.text_align.clone();
         self.state.font_family = self.font_family.clone();
         self.state.two_page = self.two_page;
         self.state.theme = self.theme.clone();
@@ -250,6 +287,7 @@ impl ReaderView {
             margin: st.margin,
             max_width: st.max_width,
             justify: st.justify,
+            text_align: st.text_align.clone(),
             font_family: st.font_family.clone(),
             two_page: st.two_page,
             theme: st.theme.clone(),
@@ -294,6 +332,7 @@ impl ReaderView {
             passphrase_modal: false,
             toc_matches: Vec::new(),
             covers: HashMap::new(),
+            covers_backfilled: false,
             selection_status: String::new(),
             reading_start: std::time::Instant::now(),
             panel: Panel::None,
@@ -308,6 +347,10 @@ impl ReaderView {
             nav_history: Vec::new(),
             cached_word_count: 0,
             cached_progress: 0.0,
+            section_start_pct: 0.0,
+            section_end_pct: 100.0,
+            chapter_ticks: Vec::new(),
+            scroll_handle: ScrollHandle::default(),
             cached_constrained_html: String::new(),
             cached_column_px: 0.0,
             cached_dom: None,
@@ -319,7 +362,14 @@ impl ReaderView {
             sidebar_width: 260.0,
             export_modal: false,
             synced_dark_mode: None,
+            focus_handle: cx.focus_handle(),
+            tts_engine: None,
+            tts_speaking: false,
+            tts_rate: 1.0,
+            tts_text: String::new(),
         };
+
+        view.focus_handle.focus(window, cx);
 
         if view.show_library {
             view.load_covers();
@@ -405,6 +455,7 @@ impl ReaderView {
                 // Deliver merged book CSS and inline matching <style> rules onto elements
                 // so stripping <head> in `prepare_section_html` preserves publisher styling.
                 book.layout_mut().asset_delivery = ebook_rs::AssetDeliveryStrategy::InlinedStyle;
+                self.focus_handle.focus(window, cx);
                 if book.locations().total_locations == 0 {
                     book.generate_locations(1000);
                 }
@@ -571,9 +622,54 @@ impl ReaderView {
         cx.notify();
     }
 
+    fn jump_to_percentage(&mut self, pct: f32, cx: &mut Context<Self>) {
+        let clamped = pct.clamp(0.0, 100.0);
+        let span = self.section_end_pct - self.section_start_pct;
+        if span > 0.05 && clamped >= self.section_start_pct && clamped <= self.section_end_pct {
+            let frac = ((clamped - self.section_start_pct) / span).clamp(0.0, 1.0);
+            let max_y: f32 = self.scroll_handle.max_offset().y.into();
+            if max_y > 1.0 {
+                self.scroll_handle
+                    .set_offset(point(px(0.0), px(-(frac * max_y))));
+                cx.notify();
+                return;
+            }
+        }
+        let target_idx = if let Some(book) = &self.book {
+            let total = book.sections().len();
+            if total == 0 {
+                return;
+            }
+            let by_cfi = if book.locations().total_locations > 0 {
+                let target_loc =
+                    ((clamped / 100.0) * book.locations().total_locations as f32).round() as usize;
+                book.locations()
+                    .cfi_from_location(target_loc)
+                    .and_then(|cfi| book.get_section_and_offset_by_cfi(&cfi).ok())
+                    .map(|(sec, _)| sec.index)
+            } else {
+                None
+            };
+            by_cfi
+                .unwrap_or_else(|| {
+                    (((clamped / 100.0) * total as f32).floor() as usize).min(total - 1)
+                })
+                .min(total - 1)
+        } else {
+            return;
+        };
+        self.jump(target_idx, cx);
+    }
+
     fn load_current(&mut self, cx: &mut Context<Self>) {
+        self.stop_tts();
+        self.tts_text.clear();
         self.cached_word_count = 0;
         self.cached_progress = 0.0;
+        self.section_start_pct = 0.0;
+        self.section_end_pct = 100.0;
+        self.chapter_ticks.clear();
+        self.scroll_handle.set_offset(point(px(0.0), px(0.0)));
         self.cached_dom = None;
         self.cached_dom2 = None;
         self.page1_selection = Some(gpui_kit::base::TextSelectionHandle::new("", cx));
@@ -583,6 +679,7 @@ impl ReaderView {
             match book.get_section(self.current) {
                 Ok(sec) => {
                     self.cached_word_count = sec.plain_text.split_whitespace().count();
+                    self.tts_text = sec.plain_text.clone();
                     let inlined_svg = inline_svg_images(&sec.processed_html, book, &sec.full_path);
                     self.cached_dom = Some(ebook_rs::EbookDomTree::parse(&inlined_svg));
                     let current_annotations: Vec<Annotation> = self
@@ -620,17 +717,34 @@ impl ReaderView {
                     Some((self.current + 1, ebook_rs::EbookDomTree::parse(&inlined2)));
             }
             if !book.sections().is_empty() {
-                let cfi = book
-                    .to_readium_locator(self.current, 0)
-                    .ok()
-                    .and_then(|l| l.locations.cfi);
-                self.cached_progress = if let Some(cfi) = cfi
-                    && book.locations().total_locations > 0
-                {
-                    (book.locations().percentage_from_cfi(&cfi) * 100.0) as f32
-                } else {
-                    (self.current as f32 + 1.0) / book.sections().len() as f32 * 100.0
+                let total = book.sections().len();
+                let has_locs = book.locations().total_locations > 0;
+                let pct_for_sec = |idx: usize| -> f32 {
+                    if idx >= total {
+                        return 100.0;
+                    }
+                    if has_locs
+                        && let Ok(loc) = book.to_readium_locator(idx, 0)
+                        && let Some(cfi) = loc.locations.cfi
+                    {
+                        return (book.locations().percentage_from_cfi(&cfi) * 100.0) as f32;
+                    }
+                    (idx as f32 / total as f32) * 100.0
                 };
+                self.section_start_pct = pct_for_sec(self.current);
+                self.section_end_pct = pct_for_sec(self.current + 1).max(self.section_start_pct);
+                self.cached_progress = if has_locs {
+                    self.section_start_pct
+                } else {
+                    (self.current as f32 + 1.0) / total as f32 * 100.0
+                };
+
+                // Build chapter boundary ticks (capped to keep dense books clean)
+                let step = (total / 40).max(1);
+                self.chapter_ticks = (1..total)
+                    .step_by(step)
+                    .map(|idx| (pct_for_sec(idx) / 100.0).clamp(0.0, 1.0))
+                    .collect();
             }
         }
         self.cached_column_px = column_px;
@@ -907,6 +1021,7 @@ impl ReaderView {
     }
 
     fn go_library(&mut self, cx: &mut Context<Self>) {
+        self.stop_tts();
         self.show_library = true;
         self.load_covers();
         self.sync_state();
@@ -974,8 +1089,11 @@ impl ReaderView {
                 .border_color(palette.border)
                 .child(
                     h_flex()
+                        .id("lib-about")
+                        .cursor_pointer()
                         .items_center()
                         .gap_2()
+                        .on_click(cx.listener(|v, _, _, cx| v.show_about_modal(cx)))
                         .child(div().w(px(32.0)).h(px(32.0)).overflow_hidden().child(
                             TextView::html(
                                 "app-logo",
@@ -1522,6 +1640,7 @@ impl ReaderView {
         }
 
         v_flex()
+            .relative()
             .size_full()
             .bg(palette.bg)
             .text_color(palette.fg)
@@ -1535,6 +1654,7 @@ impl ReaderView {
                     .overflow_y_scrollbar()
                     .child(scroll_body),
             )
+            .children(self.render_modal_overlay(palette, cx))
             .into_any_element()
     }
 
@@ -1626,11 +1746,7 @@ impl ReaderView {
             && let Ok(sec) = book.get_section_by_href(path_part)
         {
             let idx = sec.index;
-            if idx < book.sections().len() {
-                self.current = idx;
-                self.load_current(cx);
-                cx.notify();
-            }
+            self.jump(idx, cx);
         }
     }
 
@@ -1692,6 +1808,82 @@ impl ReaderView {
         self.save_state();
         cx.notify();
     }
+    fn stop_tts(&mut self) {
+        if let Some(engine) = &mut self.tts_engine {
+            let _ = engine.stop();
+        }
+        self.tts_speaking = false;
+    }
+
+    fn apply_tts_rate(engine: &mut tts::Tts, mult: f32) {
+        let normal = engine.normal_rate();
+        let min = engine.min_rate();
+        let max = engine.max_rate();
+        let rate = if mult <= 1.0 {
+            let t = ((mult - 0.5) / 0.5).clamp(0.0, 1.0);
+            min + t * (normal - min)
+        } else {
+            let t = ((mult - 1.0) / 1.5).clamp(0.0, 1.0);
+            normal + t * (max - normal)
+        };
+        let _ = engine.set_rate(rate);
+    }
+
+    fn toggle_tts(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.tts_speaking {
+            self.stop_tts();
+            cx.notify();
+            return;
+        }
+        let selected = Self::selected_text(window, cx);
+        let text = if !selected.is_empty() {
+            selected
+        } else {
+            self.tts_text.trim().to_string()
+        };
+        if text.is_empty() {
+            notify_simple(
+                window,
+                cx,
+                "Read Aloud",
+                "No text to speak in this section.".into(),
+            );
+            return;
+        }
+        if self.tts_engine.is_none() {
+            match tts::Tts::default() {
+                Ok(engine) => self.tts_engine = Some(engine),
+                Err(e) => {
+                    notify_simple(window, cx, "TTS Unavailable", format!("{e}"));
+                    return;
+                }
+            }
+        }
+        if let Some(engine) = &mut self.tts_engine {
+            Self::apply_tts_rate(engine, self.tts_rate);
+            if let Err(e) = engine.speak(text, true) {
+                self.tts_speaking = false;
+                notify_simple(window, cx, "TTS Error", format!("{e}"));
+            } else {
+                self.tts_speaking = true;
+            }
+        }
+        cx.notify();
+    }
+
+    fn adjust_tts_rate(&mut self, delta: f32, window: &mut Window, cx: &mut Context<Self>) {
+        self.tts_rate = (self.tts_rate + delta).clamp(0.5, 2.5);
+        if let Some(engine) = &mut self.tts_engine {
+            Self::apply_tts_rate(engine, self.tts_rate);
+        }
+        if self.tts_speaking {
+            self.stop_tts();
+            self.toggle_tts(window, cx);
+        } else {
+            cx.notify();
+        }
+    }
+
     fn toggle_zen_mode(&mut self, cx: &mut Context<Self>) {
         self.zen_mode = !self.zen_mode;
         cx.notify();
@@ -1764,6 +1956,22 @@ impl ReaderView {
             cx.notify();
         }
     }
+    fn show_about_modal(&mut self, cx: &mut Context<Self>) {
+        let about = format!(
+            "eParna v{}\n{}\n\n\
+            Built in pure Rust with ebook-rs & gpui-kit (gpui-fast).\n\
+            Supports 25+ ebook & document formats (EPUB, KEPUB, KFX, MOBI, AZW3, FB2, LIT, PDF, CBZ, DOCX, ODT, RTF, HTML, Markdown, Typst, LaTeX, and more).\n\n\
+            Author: {}\n\
+            License: MIT\n\
+            Repository: {}",
+            env!("CARGO_PKG_VERSION"),
+            env!("CARGO_PKG_DESCRIPTION"),
+            env!("CARGO_PKG_AUTHORS"),
+            env!("CARGO_PKG_REPOSITORY"),
+        );
+        self.show_modal("About eParna", about, cx);
+    }
+
     fn show_shortcuts_modal(&mut self, cx: &mut Context<Self>) {
         let help = "\
 Keyboard Shortcuts:
@@ -1786,6 +1994,7 @@ Reading & Display:
   m                    Cycle theme (Light, Dark, OLED Black, Sepia, Nord, Solarized, E-Ink)
   r                    Toggle Manga / RTL reading flow
   Ctrl + F             Find in current chapter
+  v                    Read aloud / Stop OS Text-to-Speech
 
 Sidebars & Panels:
   Ctrl + \\            Toggle sidebar visibility
@@ -1798,12 +2007,7 @@ Sidebars & Panels:
   Ctrl + C             Copy selected text
   ? / F1               This Keyboard Shortcuts cheatsheet";
 
-        self.modal = Some(Modal {
-            title: "Keyboard Shortcuts".into(),
-            body: help.into(),
-            image: None,
-        });
-        cx.notify();
+        self.show_modal("Keyboard Shortcuts", help.into(), cx);
     }
     fn toggle_two_page(&mut self, cx: &mut Context<Self>) {
         self.two_page = !self.two_page;
@@ -2019,6 +2223,119 @@ Sidebars & Panels:
             );
         }
     }
+    fn render_modal_overlay(
+        &self,
+        palette: ThemePalette,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let m = self.modal.as_ref()?;
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .bg(rgba(0x00000088))
+                .flex()
+                .items_center()
+                .justify_center()
+                .p_6()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|v, _, _, cx| v.close_modal(cx)),
+                )
+                .child(
+                    v_flex()
+                        .w(px(720.0))
+                        .max_h(px(560.0))
+                        .gap_3()
+                        .rounded_lg()
+                        .bg(palette.bg)
+                        .text_color(palette.fg)
+                        .border_1()
+                        .border_color(palette.border)
+                        .p_4()
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .child(
+                            h_flex()
+                                .justify_between()
+                                .items_center()
+                                .child(
+                                    div()
+                                        .text_size(px(16.0))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child(m.title.clone()),
+                                )
+                                .child(
+                                    Button::new("modal-x")
+                                        .ghost()
+                                        .label("\u{2715}")
+                                        .tooltip("Close (Esc)")
+                                        .on_click(cx.listener(|v, _, _, cx| v.close_modal(cx))),
+                                ),
+                        )
+                        .child(if let Some(src) = &m.image {
+                            if let Some(im) =
+                                crate::renderer::decode_data_uri_image(src, &self.image_cache)
+                            {
+                                div()
+                                    .flex_1()
+                                    .max_h(px(440.0))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .overflow_hidden()
+                                    .child(
+                                        img(ImageSource::Image(im))
+                                            .max_w(px(660.0))
+                                            .max_h(px(420.0))
+                                            .object_fit(ObjectFit::ScaleDown),
+                                    )
+                                    .into_any_element()
+                            } else {
+                                div()
+                                    .flex_1()
+                                    .max_h(px(440.0))
+                                    .child(
+                                        TextView::html(
+                                            "modal-image",
+                                            format!("<img src='{}' style='max-width:100%' />", src),
+                                        )
+                                        .scrollable(true),
+                                    )
+                                    .into_any_element()
+                            }
+                        } else {
+                            div()
+                                .id("modal-body-scroll")
+                                .flex_1()
+                                .max_h(px(440.0))
+                                .overflow_y_scrollbar()
+                                .p_3()
+                                .rounded_md()
+                                .bg(palette.surface)
+                                .border_1()
+                                .border_color(palette.border)
+                                .text_size(px(12.5))
+                                .line_height(px(19.0))
+                                .font_family(crate::renderer::resolve_font_family("monospace"))
+                                .text_color(palette.fg)
+                                .child(gpui_kit::base::SelectableText::new(
+                                    "modal-body-text",
+                                    m.body.clone(),
+                                ))
+                                .into_any_element()
+                        })
+                        .child(
+                            h_flex().justify_end().child(
+                                Button::new("modal-close")
+                                    .primary()
+                                    .label("Close")
+                                    .on_click(cx.listener(|v, _, _, cx| v.close_modal(cx))),
+                            ),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
 }
 
 impl Render for ReaderView {
@@ -2033,7 +2350,7 @@ impl Render for ReaderView {
             self.custom_fg = fg_in;
         }
         let palette = self.theme_palette();
-        let want_dark = is_dark_theme(&self.theme);
+        let want_dark = is_palette_dark(&self.theme, &palette);
         if self.synced_dark_mode != Some(want_dark) {
             self.synced_dark_mode = Some(want_dark);
             Theme::change(
@@ -2050,6 +2367,20 @@ impl Render for ReaderView {
         if self.show_library {
             return self.render_library(window, cx, palette);
         }
+
+        let max_scroll_y: f32 = self.scroll_handle.max_offset().y.into();
+        let cur_scroll_y: f32 = (-self.scroll_handle.offset().y).into();
+        let scroll_frac = if max_scroll_y > 1.0 {
+            (cur_scroll_y / max_scroll_y).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let live_progress = if self.section_end_pct > self.section_start_pct {
+            (self.section_start_pct + scroll_frac * (self.section_end_pct - self.section_start_pct))
+                .clamp(0.0, 100.0)
+        } else {
+            self.cached_progress
+        };
 
         let status = if let Some(b) = &self.book {
             let m = b.metadata();
@@ -2071,8 +2402,9 @@ impl Render for ReaderView {
             let wpm = (self.state.wpm.max(100) as f32).max(100.0);
             let sec_words = self.cached_word_count;
             if sec_words > 0 {
-                let sec_mins = ((sec_words as f32 / wpm).ceil() as usize).max(1);
-                parts.push(format!("{sec_words} words (~{sec_mins}m left)"));
+                let rem_words = ((1.0 - scroll_frac) * sec_words as f32).round() as usize;
+                let sec_mins = ((rem_words as f32 / wpm).ceil() as usize).max(1);
+                parts.push(format!("{rem_words} words (~{sec_mins}m left in ch.)"));
             }
             let total_sections = b.sections().len();
             if total_sections > self.current + 1 && sec_words > 0 {
@@ -2085,6 +2417,7 @@ impl Render for ReaderView {
                     parts.push(format!("~{rem_mins}m in book"));
                 }
             }
+            parts.push(format!("{live_progress:.1}%"));
             let mins = self.reading_start.elapsed().as_secs() / 60;
             if mins > 0 {
                 parts.push(format!("{mins} min session"));
@@ -2108,7 +2441,7 @@ impl Render for ReaderView {
         } else {
             String::new()
         };
-        let progress = self.cached_progress;
+        let progress = live_progress;
 
         let on_open = cx.listener(|view, _ev, window, cx| {
             if let Some(path) = pick_ebook_file() {
@@ -2780,9 +3113,26 @@ impl Render for ReaderView {
             }))
         };
 
+        let tts_btn = {
+            let b = Button::new("tts-btn")
+                .label(if self.tts_speaking {
+                    "Stop TTS"
+                } else {
+                    "Speak"
+                })
+                .tooltip("Read aloud / Stop OS Text-to-Speech (V)");
+            let b = if self.tts_speaking {
+                b.outline()
+            } else {
+                b.ghost()
+            };
+            b.on_click(cx.listener(|v, _, window, cx| v.toggle_tts(window, cx)))
+        };
+
         let right_controls = h_flex()
             .gap_1()
             .items_center()
+            .child(tts_btn)
             .child(
                 Button::new("bm")
                     .ghost()
@@ -2975,6 +3325,20 @@ impl Render for ReaderView {
                     .on_click(cx.listener(|v, _, _, cx| v.adjust_wpm(20, cx)))
                     .into_any_element(),
             ))
+            .child(setting_row(
+                "TTS speed",
+                format!("{:.1}x", self.tts_rate),
+                Button::new("tts-dec")
+                    .ghost()
+                    .label("\u{2212}")
+                    .on_click(cx.listener(|v, _, window, cx| v.adjust_tts_rate(-0.1, window, cx)))
+                    .into_any_element(),
+                Button::new("tts-inc")
+                    .ghost()
+                    .label("+")
+                    .on_click(cx.listener(|v, _, window, cx| v.adjust_tts_rate(0.1, window, cx)))
+                    .into_any_element(),
+            ))
             .child(div().w_full().h(px(1.0)).bg(palette.border))
             .child(cycle_row(
                 "Typeface",
@@ -2984,12 +3348,17 @@ impl Render for ReaderView {
             ))
             .child(cycle_row(
                 "Align",
-                if self.justify { "Justify" } else { "Left" },
+                &self.text_align,
                 "al",
                 cx.listener(|v, _, _, cx| {
-                    v.justify = !v.justify;
+                    v.text_align = match v.text_align.as_str() {
+                        "Default" => "Left".to_string(),
+                        "Left" => "Center".to_string(),
+                        "Center" => "Right".to_string(),
+                        _ => "Default".to_string(),
+                    };
+                    v.justify = v.text_align == "Left";
                     v.sync_state();
-                    v.load_current(cx);
                     cx.notify();
                 }),
             ))
@@ -3326,7 +3695,7 @@ impl Render for ReaderView {
                     .px(px(margin))
                     .text_size(px(font_size))
                     .line_height(px(font_size * line_height))
-                    .font_family(self.font_family.clone())
+                    .font_family(crate::renderer::resolve_font_family(&self.font_family))
                     .text_align(TextAlign::Left)
                     .overflow_hidden();
 
@@ -3344,7 +3713,7 @@ impl Render for ReaderView {
                         base_font_size: font_size,
                         line_height,
                         font_family: &self.font_family,
-                        justify: self.justify,
+                        text_align: &self.text_align,
                         rtl_mode: self.rtl_mode,
                         column_px,
                         annotations: &sec_annotations,
@@ -3354,15 +3723,31 @@ impl Render for ReaderView {
                         on_link_click: on_link_click.clone(),
                     };
                     let rendered = render_ebook_dom(dom, &cfg);
-                    page_div.child(
-                        div()
-                            .id(SharedString::from(format!("{id}-scroll")))
-                            .w_full()
-                            .h_full()
-                            .overflow_y_scrollbar()
-                            .py_2()
-                            .child(rendered),
-                    )
+                    if section_idx == self.current {
+                        page_div
+                            .relative()
+                            .child(
+                                div()
+                                    .id(SharedString::from(format!("{id}-scroll")))
+                                    .w_full()
+                                    .h_full()
+                                    .overflow_y_scroll()
+                                    .track_scroll(&self.scroll_handle)
+                                    .py_2()
+                                    .child(rendered),
+                            )
+                            .child(Scrollbar::vertical(&self.scroll_handle))
+                    } else {
+                        page_div.child(
+                            div()
+                                .id(SharedString::from(format!("{id}-scroll")))
+                                .w_full()
+                                .h_full()
+                                .overflow_y_scrollbar()
+                                .py_2()
+                                .child(rendered),
+                        )
+                    }
                 } else {
                     page_div.child(
                         TextView::html(id.clone(), fallback_html)
@@ -3407,6 +3792,12 @@ impl Render for ReaderView {
             .flex_shrink(1.0)
             .h_full()
             .overflow_hidden()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|v, _, window, cx| {
+                    v.focus_handle.focus(window, cx);
+                }),
+            )
             .child(margin_prev)
             .child(if self.two_page {
                 h_flex()
@@ -3481,7 +3872,7 @@ impl Render for ReaderView {
         };
 
         let on_key = cx.listener(|view, event: &KeyDownEvent, window, cx| {
-            let key = event.keystroke.key.as_str();
+            let key = event.keystroke.key.to_ascii_lowercase();
             let ctrl = event.keystroke.modifiers.control;
             let alt = event.keystroke.modifiers.alt;
 
@@ -3511,7 +3902,7 @@ impl Render for ReaderView {
                 return;
             }
             if ctrl {
-                match key {
+                match key.as_str() {
                     "o" => {
                         if let Some(path) = pick_ebook_file() {
                             view.open_file(path, window, cx);
@@ -3542,14 +3933,14 @@ impl Render for ReaderView {
                     _ => {}
                 }
             } else if alt {
-                if key == "ArrowLeft" || key == "Left" {
+                if key == "arrowleft" || key == "left" {
                     view.jump_back(cx);
                 }
             } else {
-                match key {
-                    "ArrowRight" | "PageDown" | "j" => view.next(cx),
-                    "ArrowLeft" | "PageUp" | "k" => view.prev(cx),
-                    "Backspace" if !view.show_library => view.jump_back(cx),
+                match key.as_str() {
+                    "right" | "arrowright" | "pagedown" | "j" => view.next(cx),
+                    "left" | "arrowleft" | "pageup" | "k" => view.prev(cx),
+                    "backspace" if !view.show_library => view.jump_back(cx),
                     "z" if !view.show_library => view.toggle_zen_mode(cx),
                     "p" if !view.show_library => {
                         view.panel = if view.panel == Panel::Typography {
@@ -3559,26 +3950,28 @@ impl Render for ReaderView {
                         };
                         cx.notify();
                     }
-                    " " => {
+                    " " | "space" => {
                         if event.keystroke.modifiers.shift {
                             view.prev(cx);
                         } else {
                             view.next(cx);
                         }
                     }
-                    "Home" => view.jump(0, cx),
-                    "End" => {
+                    "home" => view.jump(0, cx),
+                    "end" => {
                         if let Some(b) = &view.book {
                             let last = b.sections().len().saturating_sub(1);
                             view.jump(last, cx);
                         }
                     }
-                    "F11" => view.toggle_fullscreen(window, cx),
-                    "?" | "F1" => view.show_shortcuts_modal(cx),
+                    "f11" => view.toggle_fullscreen(window, cx),
+                    "?" | "f1" => view.show_shortcuts_modal(cx),
+                    "/" if event.keystroke.modifiers.shift => view.show_shortcuts_modal(cx),
                     "+" | "=" => view.adjust_font_size(1.0, cx),
                     "-" | "_" => view.adjust_font_size(-1.0, cx),
                     "m" if !view.show_library => view.cycle_theme(cx),
                     "r" if !view.show_library => view.toggle_rtl(cx),
+                    "v" if !view.show_library => view.toggle_tts(window, cx),
                     "t" if !view.show_library => {
                         view.sidebar_open = true;
                         view.sidebar_mode = SidebarMode::Contents;
@@ -3605,291 +3998,215 @@ impl Render for ReaderView {
             }
         });
 
-        let overlay: Option<AnyElement> = if self.export_modal {
-            const EXPORT_GROUPS: &[(&str, &[(&str, &str)])] = &[
-                (
-                    "E-Readers",
-                    &[
-                        ("EPUB 3", "epub"),
-                        ("Kobo KEPUB", "kepub.epub"),
-                        ("Amazon KFX", "kfx"),
-                        ("Kindle MOBI", "mobi"),
-                        ("Kindle AZW3", "azw3"),
-                    ],
-                ),
-                (
-                    "Documents",
-                    &[
-                        ("PDF", "pdf"),
-                        ("Word DOCX", "docx"),
-                        ("OpenDocument ODT", "odt"),
-                        ("Rich Text RTF", "rtf"),
-                        ("PowerPoint PPTX", "pptx"),
-                        ("FictionBook 2", "fb2"),
-                    ],
-                ),
-                (
-                    "Markup & Web",
-                    &[
-                        ("Markdown", "md"),
-                        ("Plain Text", "txt"),
-                        ("HTML5", "html"),
-                        ("HTMLZ", "htmlz"),
-                        ("TXTZ", "txtz"),
-                        ("OEB Package", "oeb"),
-                        ("ZIP Bundle", "zip"),
-                    ],
-                ),
-                (
-                    "Academic & Technical",
-                    &[
-                        ("LaTeX (.tex)", "tex"),
-                        ("Typst (.typ)", "typ"),
-                        ("AsciiDoc (.adoc)", "adoc"),
-                        ("Org-mode (.org)", "org"),
-                        ("reST (.rst)", "rst"),
-                    ],
-                ),
-                (
-                    "Legacy & AI",
-                    &[
-                        ("Microsoft Reader (.lit)", "lit"),
-                        ("PalmDB (.pdb)", "pdb"),
-                        ("PMLZ", "pmlz"),
-                        ("Rocket eBook (.rb)", "rb"),
-                        ("Psion TCR", "tcr"),
-                        ("RAG Chunks (.json)", "json"),
-                    ],
-                ),
-            ];
-            let mut groups_col = v_flex().gap_3();
-            for &(group_name, formats) in EXPORT_GROUPS {
-                let mut row = h_flex().gap_2().flex_wrap();
-                for &(label, ext) in formats {
-                    let lbl = label.to_string();
-                    let ext_s = ext.to_string();
-                    row = row.child(
-                        Button::new(format!("exp-fmt-{ext}"))
-                            .outline()
-                            .label(label)
-                            .on_click(cx.listener(move |v, _, window, cx| {
-                                v.export_book_as(&lbl, &ext_s, window, cx);
-                            })),
+        let overlay: Option<AnyElement> =
+            if self.export_modal {
+                const EXPORT_GROUPS: &[(&str, &[(&str, &str)])] = &[
+                    (
+                        "E-Readers",
+                        &[
+                            ("EPUB 3", "epub"),
+                            ("Kobo KEPUB", "kepub.epub"),
+                            ("Amazon KFX", "kfx"),
+                            ("Kindle MOBI", "mobi"),
+                            ("Kindle AZW3", "azw3"),
+                        ],
+                    ),
+                    (
+                        "Documents",
+                        &[
+                            ("PDF", "pdf"),
+                            ("Word DOCX", "docx"),
+                            ("OpenDocument ODT", "odt"),
+                            ("Rich Text RTF", "rtf"),
+                            ("PowerPoint PPTX", "pptx"),
+                            ("FictionBook 2", "fb2"),
+                        ],
+                    ),
+                    (
+                        "Markup & Web",
+                        &[
+                            ("Markdown", "md"),
+                            ("Plain Text", "txt"),
+                            ("HTML5", "html"),
+                            ("HTMLZ", "htmlz"),
+                            ("TXTZ", "txtz"),
+                            ("OEB Package", "oeb"),
+                            ("ZIP Bundle", "zip"),
+                        ],
+                    ),
+                    (
+                        "Academic & Technical",
+                        &[
+                            ("LaTeX (.tex)", "tex"),
+                            ("Typst (.typ)", "typ"),
+                            ("AsciiDoc (.adoc)", "adoc"),
+                            ("Org-mode (.org)", "org"),
+                            ("reST (.rst)", "rst"),
+                        ],
+                    ),
+                    (
+                        "Legacy & AI",
+                        &[
+                            ("Microsoft Reader (.lit)", "lit"),
+                            ("PalmDB (.pdb)", "pdb"),
+                            ("PMLZ", "pmlz"),
+                            ("Rocket eBook (.rb)", "rb"),
+                            ("Psion TCR", "tcr"),
+                            ("RAG Chunks (.json)", "json"),
+                        ],
+                    ),
+                ];
+                let mut groups_col = v_flex().gap_3();
+                for &(group_name, formats) in EXPORT_GROUPS {
+                    let mut row = h_flex().gap_2().flex_wrap();
+                    for &(label, ext) in formats {
+                        let lbl = label.to_string();
+                        let ext_s = ext.to_string();
+                        row = row.child(
+                            Button::new(format!("exp-fmt-{ext}"))
+                                .outline()
+                                .label(label)
+                                .on_click(cx.listener(move |v, _, window, cx| {
+                                    v.export_book_as(&lbl, &ext_s, window, cx);
+                                })),
+                        );
+                    }
+                    groups_col = groups_col.child(
+                        v_flex()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_size(px(11.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(palette.muted)
+                                    .child(group_name.to_uppercase()),
+                            )
+                            .child(row),
                     );
                 }
-                groups_col = groups_col.child(
-                    v_flex()
-                        .gap_1()
-                        .child(
-                            div()
-                                .text_size(px(11.0))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(palette.muted)
-                                .child(group_name.to_uppercase()),
+                Some(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .bg(rgba(0x00000088))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .p_6()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|v, _, _, cx| {
+                                v.export_modal = false;
+                                cx.notify();
+                            }),
                         )
-                        .child(row),
-                );
-            }
-            Some(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .bg(rgba(0x00000088))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .p_6()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|v, _, _, cx| {
-                            v.export_modal = false;
-                            cx.notify();
-                        }),
-                    )
-                    .child(
-                        v_flex()
-                            .w(px(640.0))
-                            .max_h(px(560.0))
-                            .gap_3()
-                            .rounded_lg()
-                            .bg(palette.bg)
-                            .text_color(palette.fg)
-                            .border_1()
-                            .border_color(palette.border)
-                            .p_4()
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .child(
-                                h_flex()
-                                    .justify_between()
-                                    .items_center()
-                                    .child(
-                                        div()
-                                            .text_size(px(16.0))
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .child("Export / Convert Book"),
-                                    )
-                                    .child(
-                                        Button::new("exp-modal-x")
-                                            .ghost()
-                                            .label("\u{2715}")
-                                            .tooltip("Close (Esc)")
-                                            .on_click(cx.listener(|v, _, _, cx| {
-                                                v.export_modal = false;
-                                                cx.notify();
-                                            })),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .id("exp-modal-scroll")
-                                    .flex_1()
-                                    .overflow_y_scrollbar()
-                                    .child(groups_col),
-                            )
-                            .child(
-                                h_flex()
-                                    .justify_between()
-                                    .items_center()
-                                    .child(
-                                        Button::new("exp-all-dialog")
-                                            .ghost()
-                                            .label("Custom filename\u{2026}")
-                                            .on_click(cx.listener(|v, _, window, cx| {
-                                                v.export_modal = false;
-                                                v.export_book_dialog(window, cx);
-                                            })),
-                                    )
-                                    .child(
-                                        Button::new("exp-modal-close")
-                                            .ghost()
-                                            .label("Cancel")
-                                            .on_click(cx.listener(|v, _, _, cx| {
-                                                v.export_modal = false;
-                                                cx.notify();
-                                            })),
-                                    ),
-                            ),
-                    )
-                    .into_any_element(),
-            )
-        } else if let Some(m) = &self.modal {
-            Some(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .bg(rgba(0x00000088))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .p_6()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|v, _, _, cx| v.close_modal(cx)),
-                    )
-                    .child(
-                        v_flex()
-                            .w(px(720.0))
-                            .max_h(px(560.0))
-                            .gap_3()
-                            .rounded_lg()
-                            .bg(palette.bg)
-                            .text_color(palette.fg)
-                            .border_1()
-                            .border_color(palette.border)
-                            .p_4()
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .child(
-                                h_flex()
-                                    .justify_between()
-                                    .items_center()
-                                    .child(
-                                        div()
-                                            .text_size(px(16.0))
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .child(m.title.clone()),
-                                    )
-                                    .child(
-                                        Button::new("modal-x")
-                                            .ghost()
-                                            .label("\u{2715}")
-                                            .tooltip("Close (Esc)")
-                                            .on_click(cx.listener(|v, _, _, cx| v.close_modal(cx))),
-                                    ),
-                            )
-                            .child(if let Some(src) = &m.image {
-                                div()
-                                    .flex_1()
-                                    .max_h(px(440.0))
-                                    .child(
-                                        TextView::html(
-                                            "modal-image",
-                                            format!("<img src='{}' style='max-width:100%' />", src),
+                        .child(
+                            v_flex()
+                                .w(px(640.0))
+                                .max_h(px(560.0))
+                                .gap_3()
+                                .rounded_lg()
+                                .bg(palette.bg)
+                                .text_color(palette.fg)
+                                .border_1()
+                                .border_color(palette.border)
+                                .p_4()
+                                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                .child(
+                                    h_flex()
+                                        .justify_between()
+                                        .items_center()
+                                        .child(
+                                            div()
+                                                .text_size(px(16.0))
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .child("Export / Convert Book"),
                                         )
-                                        .scrollable(true),
-                                    )
-                                    .into_any_element()
-                            } else {
-                                div()
-                                    .flex_1()
-                                    .max_h(px(440.0))
-                                    .text_size(px(13.0))
-                                    .child(
-                                        TextView::html("modal-body", escape_html(&m.body))
-                                            .scrollable(true),
-                                    )
-                                    .into_any_element()
-                            })
-                            .child(
-                                h_flex().justify_end().child(
-                                    Button::new("modal-close")
-                                        .primary()
-                                        .label("Close")
-                                        .on_click(cx.listener(|v, _, _, cx| v.close_modal(cx))),
+                                        .child(
+                                            Button::new("exp-modal-x")
+                                                .ghost()
+                                                .label("\u{2715}")
+                                                .tooltip("Close (Esc)")
+                                                .on_click(cx.listener(|v, _, _, cx| {
+                                                    v.export_modal = false;
+                                                    cx.notify();
+                                                })),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .id("exp-modal-scroll")
+                                        .flex_1()
+                                        .overflow_y_scrollbar()
+                                        .child(groups_col),
+                                )
+                                .child(
+                                    h_flex()
+                                        .justify_between()
+                                        .items_center()
+                                        .child(
+                                            Button::new("exp-all-dialog")
+                                                .ghost()
+                                                .label("Custom filename\u{2026}")
+                                                .on_click(cx.listener(|v, _, window, cx| {
+                                                    v.export_modal = false;
+                                                    v.export_book_dialog(window, cx);
+                                                })),
+                                        )
+                                        .child(
+                                            Button::new("exp-modal-close")
+                                                .ghost()
+                                                .label("Cancel")
+                                                .on_click(cx.listener(|v, _, _, cx| {
+                                                    v.export_modal = false;
+                                                    cx.notify();
+                                                })),
+                                        ),
                                 ),
-                            ),
-                    )
-                    .into_any_element(),
-            )
-        } else if self.passphrase_modal {
-            Some(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .bg(rgba(0x00000088))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .p_6()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|v, _, _, cx| v.cancel_passphrase(cx)),
-                    )
-                    .child(
-                        v_flex()
-                            .w(px(420.0))
-                            .gap_3()
-                            .rounded_lg()
-                            .bg(palette.bg)
-                            .text_color(palette.fg)
-                            .border_1()
-                            .border_color(palette.border)
-                            .p_4()
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .child(
-                                div()
-                                    .text_size(px(16.0))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child("Passphrase required"),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(13.0))
-                                    .text_color(palette.muted)
-                                    .child(self.passphrase_error.clone()),
-                            )
-                            .child(Input::new(&self.passphrase_input))
-                            .child(h_flex().justify_end().gap_2().children(
-                                [
+                        )
+                        .into_any_element(),
+                )
+            } else if self.modal.is_some() {
+                self.render_modal_overlay(palette, cx)
+            } else if self.passphrase_modal {
+                Some(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .bg(rgba(0x00000088))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .p_6()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|v, _, _, cx| v.cancel_passphrase(cx)),
+                        )
+                        .child(
+                            v_flex()
+                                .w(px(420.0))
+                                .gap_3()
+                                .rounded_lg()
+                                .bg(palette.bg)
+                                .text_color(palette.fg)
+                                .border_1()
+                                .border_color(palette.border)
+                                .p_4()
+                                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                .child(
+                                    div()
+                                        .text_size(px(16.0))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child("Passphrase required"),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(13.0))
+                                        .text_color(palette.muted)
+                                        .child(self.passphrase_error.clone()),
+                                )
+                                .child(Input::new(&self.passphrase_input))
+                                .child(h_flex().justify_end().gap_2().children([
                                     Button::new("pp-cancel").ghost().label("Cancel").on_click(
                                         cx.listener(|v, _, _, cx| v.cancel_passphrase(cx)),
                                     ),
@@ -3898,19 +4215,39 @@ impl Render for ReaderView {
                                             v.submit_passphrase(window, cx)
                                         }),
                                     ),
-                                ],
-                            )),
-                    )
-                    .into_any_element(),
-            )
-        } else {
-            None
-        };
+                                ])),
+                        )
+                        .into_any_element(),
+                )
+            } else {
+                None
+            };
 
         let status_line = if self.selection_status.is_empty() {
             status
         } else {
             format!("{} — {}", status, self.selection_status)
+        };
+
+        let total_secs = self.book.as_ref().map(|b| b.sections().len()).unwrap_or(0);
+        let scrubber_preview = std::sync::Arc::new({
+            let total_secs = total_secs.max(1);
+            move |pct: f32| {
+                let sec_num =
+                    (((pct / 100.0) * total_secs as f32).floor() as usize + 1).min(total_secs);
+                format!("Sec {sec_num}/{total_secs} · {pct:.1}%")
+            }
+        });
+        let scrubber_seek = std::sync::Arc::new({
+            let view = view.clone();
+            move |pct: f32, _window: &mut Window, cx: &mut App| {
+                view.update(cx, |v, cx| v.jump_to_percentage(pct, cx));
+            }
+        });
+        let accent_color: Hsla = if is_palette_dark(&self.theme, &palette) {
+            rgb(0x60a5fa).into()
+        } else {
+            rgb(0x2563eb).into()
         };
 
         let bottom_bar = v_flex()
@@ -3921,7 +4258,20 @@ impl Render for ReaderView {
             .px_3()
             .py_1()
             .gap_1()
-            .child(Progress::new("prog").value(progress))
+            .child(ProgressScrubber {
+                id: ElementId::Name("prog-scrubber".into()),
+                progress,
+                ticks: self.chapter_ticks.clone(),
+                track_color: palette.border,
+                fill_color: accent_color,
+                tick_color: palette.muted,
+                thumb_color: accent_color,
+                preview_bg: palette.surface,
+                preview_fg: palette.fg,
+                preview_border: palette.border,
+                format_preview: scrubber_preview,
+                on_seek: scrubber_seek,
+            })
             .child(
                 h_flex()
                     .w_full()
@@ -3989,6 +4339,7 @@ impl Render for ReaderView {
                 .overflow_hidden()
                 .bg(bg)
                 .text_color(fg)
+                .track_focus(&self.focus_handle)
                 .on_key_down(on_key)
                 .child(div().flex_1().size_full().overflow_hidden().child(body))
                 .child(
@@ -4016,6 +4367,7 @@ impl Render for ReaderView {
                 .overflow_hidden()
                 .bg(bg)
                 .text_color(fg)
+                .track_focus(&self.focus_handle)
                 .on_key_down(on_key)
                 .child(header)
                 .child(find_bar)

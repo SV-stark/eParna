@@ -6,6 +6,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-11-24
+
+### Added
+- **OS Built-In Text-to-Speech (TTS)** (`tts` crate `0.26`):
+  - Added **Speak / Stop TTS** button in the reader header (`V` shortcut) and **TTS speed** (`0.5x`–`2.5x`) in the Typography popover; speaks selected text or the current section and stops automatically on navigation.
+- **Interactive Reading Progress Scrubber (`ProgressScrubber`)**:
+  - Added click-and-drag seeking across the book, chapter boundary tick marks, hover/drag preview tooltip (`Sec X/Y · Z.Z%`), and live intra-chapter scroll tracking (`ScrollHandle` + `Scrollbar`) with remaining words and reading time in the chapter.
+- **About eParna Dialog**:
+  - Made the Library header logo and title clickable to open the **About eParna** dialog, sharing `render_modal_overlay` across Library and Reader views.
+
+### Fixed
+- **Typography, Alignment & Custom Theme**:
+  - Mapped generic CSS font families (`sans-serif`, `serif`, `monospace`, `system-ui`) to native platform fonts (`resolve_font_family`) and prevented publisher CSS from overriding the reader's chosen typeface.
+  - Replaced the non-functional Justify toggle with `Default` / `Left` / `Center` / `Right` alignment and applied reader line-height consistently.
+  - Added luminance-based dark-mode detection (`is_palette_dark`) so dark `"Custom"` themes properly adapt `gpui-kit` chrome and publisher CSS.
+- **Keyboard Navigation & Modals**:
+  - Added `FocusHandle` tracking (`track_focus`) and lowercase GPUI key names (`left`, `right`, `pageup`, `pagedown`, `backspace`, `space`, `home`, `end`, `f1`, `f11`) so keyboard navigation and shortcuts work reliably.
+  - Rendered **Book Info**, **Keyboard Shortcuts**, Validation, and Citations modals with monospace `SelectableText` to preserve column alignment, and decoded `data:` URI images natively in lightbox modals.
+- **Library Cover Caching**:
+  - Raised the cover cache size cap from 256 KiB to **3 MiB**, added `.svg` cover MIME support, and added automatic one-time backfill for existing library entries missing covers.
+
 ## [0.9.1] - 2026-11-24
 
 ### Added

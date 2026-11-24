@@ -68,6 +68,16 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.9.2" date="2026-11-24">
+      <description>
+        <p>
+          Added OS built-in Text-to-Speech (TTS) with speed control, an interactive
+          chapter-tick reading progress scrubber with live intra-chapter scroll tracking,
+          About eParna dialog in Library view, 3 MiB cover caching with backfill, and
+          fixes for typeface/alignment/custom-theme/keyboard navigation and modals.
+        </p>
+      </description>
+    </release>
     <release version="0.9.1" date="2026-11-24">
       <description>
         <p>

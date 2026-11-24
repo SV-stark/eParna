@@ -55,7 +55,7 @@ jobs:
             build-essential pkg-config clang libclang-dev cmake libssl-dev \
             libfontconfig1-dev libfreetype6-dev libx11-xcb-dev \
             libxkbcommon-x11-dev libwayland-dev libxcb1-dev libvulkan-dev \
-            libgl1-mesa-dev libegl1-mesa-dev libdbus-1-dev libatk1.0-dev
+            libgl1-mesa-dev libegl1-mesa-dev libdbus-1-dev libatk1.0-dev libspeechd-dev
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -88,7 +88,7 @@ jobs:
             build-essential pkg-config clang libclang-dev cmake libssl-dev \
             libfontconfig1-dev libfreetype6-dev libx11-xcb-dev \
             libxkbcommon-x11-dev libwayland-dev libxcb1-dev libvulkan-dev \
-            libgl1-mesa-dev libegl1-mesa-dev libdbus-1-dev libatk1.0-dev
+            libgl1-mesa-dev libegl1-mesa-dev libdbus-1-dev libatk1.0-dev libspeechd-dev
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable

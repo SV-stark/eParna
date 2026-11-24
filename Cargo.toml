@@ -1,6 +1,6 @@
 [package]
 name = "eparna"
-version = "0.9.1"
+version = "0.9.2"
 edition = "2024"
 # Minimum supported Rust version. Edition 2024 requires Rust 1.85 or newer,
 # ebook-rs 0.19.0 requires Rust 1.88, and the locked dependency graph
@@ -59,6 +59,7 @@ flate2 = "1"
 rfd = "0.17"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tts = "0.26"
 ureq = "3"
 
 [build-dependencies]

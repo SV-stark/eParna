@@ -336,7 +336,7 @@ jobs:
             libfontconfig1-dev libfreetype6-dev libx11-xcb-dev \
             libxkbcommon-x11-dev libwayland-dev libxcb1-dev libvulkan-dev \
             libgl1-mesa-dev libegl1-mesa-dev libdbus-1-dev libatk1.0-dev \
-            libfuse2 desktop-file-utils
+            libspeechd-dev libfuse2 desktop-file-utils
 
       - name: Install Rust (minimal profile)
         run: |

@@ -137,7 +137,11 @@ fn default_view_mode() -> String {
     "grid".into()
 }
 
-pub fn default_wpm() -> u32 {
+pub fn default_text_align() -> String {
+    "Default".into()
+}
+
+fn default_wpm() -> u32 {
     220
 }
 
@@ -154,6 +158,8 @@ pub struct PersistedState {
     pub margin: f32,
     pub max_width: f32,
     pub justify: bool,
+    #[serde(default = "default_text_align")]
+    pub text_align: String,
     pub font_family: String,
     pub two_page: bool,
     pub theme: String,
@@ -185,6 +191,7 @@ impl Default for PersistedState {
             margin: 24.0,
             max_width: 720.0,
             justify: false,
+            text_align: "Default".into(),
             font_family: "sans-serif".into(),
             two_page: false,
             theme: "Light".into(),

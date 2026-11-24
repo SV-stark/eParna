@@ -49,6 +49,8 @@ pub fn mime_ext(mime: &str) -> &'static str {
         "webp"
     } else if mime.contains("bmp") {
         "bmp"
+    } else if mime.contains("svg") {
+        "svg"
     } else {
         "img"
     }
@@ -58,7 +60,7 @@ pub fn cache_cover_to_disk(book: &ebook_rs::Book, path: &str) -> String {
     let Some((bytes, mime)) = book.cover_image() else {
         return String::new();
     };
-    if bytes.len() > 256 * 1024 {
+    if bytes.len() > 3 * 1024 * 1024 {
         return String::new();
     }
     let dir = covers_dir();

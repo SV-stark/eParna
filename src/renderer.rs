@@ -21,7 +21,7 @@ pub struct RenderConfig<'a> {
     pub base_font_size: f32,
     pub line_height: f32,
     pub font_family: &'a str,
-    pub justify: bool,
+    pub text_align: &'a str,
     pub rtl_mode: bool,
     pub column_px: f32,
     pub annotations: &'a [Annotation],
@@ -93,27 +93,33 @@ fn is_dark_theme(theme: &str) -> bool {
     matches!(theme, "Dark" | "OLED Black" | "Nord" | "Solarized Dark")
 }
 
-fn hsla_luminance(c: Hsla) -> f32 {
+pub fn hsla_luminance(c: Hsla) -> f32 {
     let rgba: Rgba = c.into();
     0.2126 * rgba.r + 0.7152 * rgba.g + 0.0722 * rgba.b
 }
 
+pub fn is_palette_dark(theme: &str, palette: &ThemePalette) -> bool {
+    is_dark_theme(theme) || (theme == "Custom" && hsla_luminance(palette.bg) < 0.45)
+}
+
 fn adapt_fg_for_theme(color: Hsla, theme: &str, palette: &ThemePalette) -> Hsla {
-    if is_dark_theme(theme) {
+    if is_palette_dark(theme, palette) {
         if hsla_luminance(color) < 0.25 {
             return palette.fg;
         }
-    } else if matches!(theme, "Sepia" | "Solarized" | "E-Ink") && hsla_luminance(color) < 0.15 {
+    } else if matches!(theme, "Sepia" | "Solarized" | "E-Ink" | "Custom")
+        && hsla_luminance(color) < 0.15
+    {
         return palette.fg;
     }
     color
 }
 
-fn adapt_bg_for_theme(color: Hsla, theme: &str) -> Option<Hsla> {
+fn adapt_bg_for_theme(color: Hsla, theme: &str, palette: &ThemePalette) -> Option<Hsla> {
     if color.a < 0.01 {
         return None;
     }
-    if is_dark_theme(theme) && hsla_luminance(color) > 0.80 {
+    if is_palette_dark(theme, palette) && hsla_luminance(color) > 0.80 {
         return None;
     }
     if matches!(theme, "Sepia" | "Solarized" | "E-Ink") && hsla_luminance(color) > 0.90 {
@@ -123,7 +129,7 @@ fn adapt_bg_for_theme(color: Hsla, theme: &str) -> Option<Hsla> {
 }
 
 fn adapt_border_for_theme(color: Hsla, theme: &str, palette: &ThemePalette) -> Hsla {
-    if is_dark_theme(theme) && hsla_luminance(color) < 0.22 {
+    if is_palette_dark(theme, palette) && hsla_luminance(color) < 0.22 {
         return palette.border;
     }
     color
@@ -314,7 +320,7 @@ fn apply_inline_css(
             "background-color" | "background" => {
                 for tok in val.split_whitespace() {
                     if let Some(c) = parse_css_color(tok) {
-                        style.background_color = adapt_bg_for_theme(c, theme);
+                        style.background_color = adapt_bg_for_theme(c, theme, palette);
                         break;
                     }
                 }
@@ -355,11 +361,12 @@ fn apply_inline_css(
                 };
             }
             "font-family" => {
-                if let Some(first) = val.split(',').next() {
-                    let cleaned = first.trim().trim_matches('"').trim_matches('\'').trim();
-                    if !cleaned.is_empty() {
-                        style.font_family = Some(cleaned.to_string());
-                    }
+                // Respect user's reader typeface choice; only keep explicit monospace fonts.
+                if val.to_ascii_lowercase().contains("mono")
+                    || val.to_ascii_lowercase().contains("consolas")
+                    || val.to_ascii_lowercase().contains("courier")
+                {
+                    style.font_family = Some(resolve_font_family("monospace"));
                 }
             }
             "text-align" => {
@@ -627,7 +634,7 @@ where
             style.color = Some(rgb(0x111111).into());
         }
         "a" if attrs.contains_key("href") => {
-            style.color = Some(if is_dark_theme(cfg.theme) {
+            style.color = Some(if is_palette_dark(cfg.theme, &cfg.palette) {
                 rgb(0x8ab4f8).into()
             } else {
                 rgb(0x2563eb).into()
@@ -1231,24 +1238,27 @@ impl<'a> DomWalker<'a> {
         let merged = merge_highlights(shifted_spans);
 
         let fs = style.font_size_px.unwrap_or(self.cfg.base_font_size);
-        let lh = style.line_height_px.unwrap_or(fs * self.cfg.line_height);
-        let align = if let Some(a) = style.text_align {
-            a
-        } else if style.rtl.unwrap_or(self.cfg.rtl_mode) {
-            TextAlign::Right
-        } else {
-            TextAlign::Left
+        let lh = fs * self.cfg.line_height;
+        let align = match self.cfg.text_align.to_ascii_lowercase().as_str() {
+            "left" => TextAlign::Left,
+            "center" => TextAlign::Center,
+            "right" => TextAlign::Right,
+            _ => {
+                if let Some(a) = style.text_align {
+                    a
+                } else if style.rtl.unwrap_or(self.cfg.rtl_mode) {
+                    TextAlign::Right
+                } else {
+                    TextAlign::Left
+                }
+            }
         };
+        let resolved_family =
+            resolve_font_family(style.font_family.as_deref().unwrap_or(self.cfg.font_family));
         let mut ts = TextStyleRefinement {
             font_size: Some(px(fs).into()),
             line_height: Some(px(lh).into()),
-            font_family: Some(
-                style
-                    .font_family
-                    .clone()
-                    .unwrap_or_else(|| self.cfg.font_family.to_string())
-                    .into(),
-            ),
+            font_family: Some(resolved_family.into()),
             color: Some(style.color.unwrap_or(self.cfg.palette.fg)),
             font_weight: style.font_weight,
             font_style: style.font_style,
@@ -1708,20 +1718,304 @@ fn find_svg_image_href(nodes: &[DomNode]) -> Option<String> {
     None
 }
 
+/// Map generic CSS font family keywords to real platform system fonts so GPUI
+/// DirectWrite / CoreText / Fontconfig renders distinct typefaces.
+pub fn resolve_font_family(name: &str) -> String {
+    match name.trim().to_ascii_lowercase().as_str() {
+        "sans-serif" | "system-ui" | "" => {
+            if cfg!(target_os = "windows") {
+                "Segoe UI".to_string()
+            } else if cfg!(target_os = "macos") {
+                "Helvetica Neue".to_string()
+            } else {
+                "DejaVu Sans".to_string()
+            }
+        }
+        "serif" => {
+            if cfg!(target_os = "macos") || cfg!(target_os = "windows") {
+                "Georgia".to_string()
+            } else {
+                "DejaVu Serif".to_string()
+            }
+        }
+        "monospace" => {
+            if cfg!(target_os = "windows") {
+                "Consolas".to_string()
+            } else if cfg!(target_os = "macos") {
+                "Menlo".to_string()
+            } else {
+                "DejaVu Sans Mono".to_string()
+            }
+        }
+        other => {
+            let _ = other;
+            name.trim().to_string()
+        }
+    }
+}
+
 /// Render an `EbookDomTree` into a full-fidelity GPUI element tree.
 pub fn render_ebook_dom(dom: &EbookDomTree, cfg: &RenderConfig<'_>) -> AnyElement {
     let root_style = CssBoxStyle {
         color: Some(cfg.palette.fg),
         font_size_px: Some(cfg.base_font_size),
-        font_family: Some(cfg.font_family.to_string()),
+        font_family: None,
         line_height_px: Some(cfg.base_font_size * cfg.line_height),
         rtl: Some(cfg.rtl_mode),
         ..Default::default()
     };
     let mut walker = DomWalker { cfg, block_seq: 0 };
     let children = walker.render_nodes_into_container(&dom.root_nodes, &root_style, false, None);
-    let _ = cfg.justify;
     v_flex().w_full().children(children).into_any_element()
+}
+
+pub type SeekCallback = Arc<dyn Fn(f32, &mut Window, &mut App) + Send + Sync>;
+
+/// Interactive reading progress scrubber with chapter boundary ticks,
+/// hover preview pill, and click/drag seeking.
+pub struct ProgressScrubber {
+    pub id: ElementId,
+    pub progress: f32,
+    pub ticks: Vec<f32>,
+    pub track_color: Hsla,
+    pub fill_color: Hsla,
+    pub tick_color: Hsla,
+    pub thumb_color: Hsla,
+    pub preview_bg: Hsla,
+    pub preview_fg: Hsla,
+    pub preview_border: Hsla,
+    pub format_preview: Arc<dyn Fn(f32) -> String + Send + Sync>,
+    pub on_seek: SeekCallback,
+}
+
+#[derive(Default)]
+struct ScrubberState {
+    dragging: bool,
+    hover_pct: Option<f32>,
+}
+
+impl Element for ProgressScrubber {
+    type RequestLayoutState = ();
+    type PrepaintState = Hitbox;
+
+    fn id(&self) -> Option<ElementId> {
+        Some(self.id.clone())
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _global_id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        let mut style = Style::default();
+        style.size.width = relative(1.0).into();
+        style.size.height = px(16.0).into();
+        style.flex_shrink = 0.0;
+        (window.request_layout(style, [], cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _global_id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        _cx: &mut App,
+    ) -> Self::PrepaintState {
+        window.insert_hitbox(bounds, HitboxBehavior::Normal)
+    }
+
+    fn paint(
+        &mut self,
+        _global_id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut Self::RequestLayoutState,
+        hitbox: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let state = window.use_state(cx, |_, _| ScrubberState::default());
+        let (is_dragging, hover_pct) = {
+            let s = state.read(cx);
+            (s.dragging, s.hover_pct)
+        };
+        let hovered = hitbox.is_hovered(window) || is_dragging;
+        let track_h = if hovered { px(7.0) } else { px(5.0) };
+        let track_y = bounds.top() + (bounds.size.height - track_h) * 0.5;
+        let track_bounds = Bounds::new(
+            Point::new(bounds.left(), track_y),
+            size(bounds.size.width, track_h),
+        );
+        window.paint_quad(PaintQuad {
+            bounds: track_bounds,
+            background: self.track_color.into(),
+            corner_radii: Corners::all(px(3.5)),
+            border_widths: Edges::default(),
+            border_color: transparent_black(),
+            border_style: BorderStyle::default(),
+        });
+
+        let frac = (self.progress / 100.0).clamp(0.0, 1.0);
+        let fill_w = bounds.size.width * frac;
+        if fill_w > px(0.5) {
+            window.paint_quad(PaintQuad {
+                bounds: Bounds::new(Point::new(bounds.left(), track_y), size(fill_w, track_h)),
+                background: self.fill_color.into(),
+                corner_radii: Corners::all(px(3.5)),
+                border_widths: Edges::default(),
+                border_color: transparent_black(),
+                border_style: BorderStyle::default(),
+            });
+        }
+
+        for &tick in &self.ticks {
+            if tick > 0.01 && tick < 0.99 {
+                let tx = bounds.left() + bounds.size.width * tick;
+                window.paint_quad(PaintQuad {
+                    bounds: Bounds::new(Point::new(tx - px(0.75), track_y), size(px(1.5), track_h)),
+                    background: self.tick_color.into(),
+                    corner_radii: Corners::default(),
+                    border_widths: Edges::default(),
+                    border_color: transparent_black(),
+                    border_style: BorderStyle::default(),
+                });
+            }
+        }
+
+        let thumb_d = if hovered { px(13.0) } else { px(9.0) };
+        let thumb_x =
+            (bounds.left() + fill_w - thumb_d * 0.5).clamp(bounds.left(), bounds.right() - thumb_d);
+        let thumb_y = bounds.top() + (bounds.size.height - thumb_d) * 0.5;
+        window.paint_quad(PaintQuad {
+            bounds: Bounds::new(Point::new(thumb_x, thumb_y), size(thumb_d, thumb_d)),
+            background: self.thumb_color.into(),
+            corner_radii: Corners::all(thumb_d * 0.5),
+            border_widths: Edges::default(),
+            border_color: transparent_black(),
+            border_style: BorderStyle::default(),
+        });
+
+        if hovered && let Some(hp) = hover_pct {
+            let label = (self.format_preview)(hp);
+            let font = window.text_style().font();
+            let run = TextRun {
+                len: label.len(),
+                font,
+                color: self.preview_fg,
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            let shaped = window
+                .text_system()
+                .shape_line(label.into(), px(11.0), &[run], None);
+            let pad_x = px(8.0);
+            let pad_y = px(4.0);
+            let pill_w = shaped.width + pad_x * 2.0;
+            let pill_h = px(22.0);
+            let hx = bounds.left() + bounds.size.width * (hp / 100.0).clamp(0.0, 1.0);
+            let pill_x = (hx - pill_w * 0.5)
+                .clamp(bounds.left(), (bounds.right() - pill_w).max(bounds.left()));
+            let pill_y = bounds.top() - pill_h - px(6.0);
+            window.paint_quad(PaintQuad {
+                bounds: Bounds::new(Point::new(pill_x, pill_y), size(pill_w, pill_h)),
+                background: self.preview_bg.into(),
+                corner_radii: Corners::all(px(5.0)),
+                border_widths: Edges::all(px(1.0)),
+                border_color: self.preview_border,
+                border_style: BorderStyle::default(),
+            });
+            let _ = shaped.paint(
+                Point::new(pill_x + pad_x, pill_y + pad_y),
+                px(14.0),
+                TextAlign::Left,
+                None,
+                window,
+                cx,
+            );
+        }
+
+        let pct_at = move |pos: Point<Pixels>| -> f32 {
+            let w: f32 = bounds.size.width.into();
+            if w <= 1.0 {
+                return 0.0;
+            }
+            let rel: f32 = (pos.x - bounds.left()).into();
+            ((rel / w) * 100.0).clamp(0.0, 100.0)
+        };
+
+        window.on_mouse_event({
+            let state = state.clone();
+            let hb = hitbox.clone();
+            move |ev: &MouseMoveEvent, phase, window, cx| {
+                if phase == DispatchPhase::Bubble {
+                    let inside = hb.is_hovered(window);
+                    let dragging = state.read(cx).dragging;
+                    if inside || dragging {
+                        let p = pct_at(ev.position);
+                        state.update(cx, |s, cx| {
+                            if s.hover_pct != Some(p) {
+                                s.hover_pct = Some(p);
+                                cx.notify();
+                            }
+                        });
+                    } else if state.read(cx).hover_pct.is_some() {
+                        state.update(cx, |s, cx| {
+                            s.hover_pct = None;
+                            cx.notify();
+                        });
+                    }
+                }
+            }
+        });
+
+        window.on_mouse_event({
+            let state = state.clone();
+            let hb = hitbox.clone();
+            move |ev: &MouseDownEvent, phase, window, cx| {
+                if phase == DispatchPhase::Bubble
+                    && ev.button == MouseButton::Left
+                    && hb.is_hovered(window)
+                {
+                    let p = pct_at(ev.position);
+                    state.update(cx, |s, cx| {
+                        s.dragging = true;
+                        s.hover_pct = Some(p);
+                        cx.notify();
+                    });
+                }
+            }
+        });
+
+        window.on_mouse_event({
+            let state = state;
+            let on_seek = self.on_seek.clone();
+            move |ev: &MouseUpEvent, phase, window, cx| {
+                if phase == DispatchPhase::Bubble && ev.button == MouseButton::Left {
+                    let was_dragging = state.update(cx, |s, cx| {
+                        let d = s.dragging;
+                        s.dragging = false;
+                        if d {
+                            cx.notify();
+                        }
+                        d
+                    });
+                    if was_dragging {
+                        let p = pct_at(ev.position);
+                        on_seek(p, window, cx);
+                    }
+                }
+            }
+        });
+    }
 }
 
 #[cfg(test)]
@@ -1788,7 +2082,7 @@ mod tests {
             base_font_size: 16.0,
             line_height: 1.6,
             font_family: "Georgia",
-            justify: false,
+            text_align: "Default",
             rtl_mode: false,
             column_px: 640.0,
             annotations: &[],
