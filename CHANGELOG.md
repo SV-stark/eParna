@@ -6,6 +6,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-11-24
+
+### Added
+- **Custom Full-Fidelity GPUI eBook Renderer (`src/renderer.rs`, `src/main.rs`)**:
+  - Replaced `TextView::html` in the main reading pane with a custom `EbookDomTree` → GPUI `div()` renderer that preserves CSS box borders (`border-top`, `border-bottom`, `border-left`, `border-right`), padding, margins, background colors, text alignment, text transforms, text indentation, lists (`ul`/`ol`/`li`), tables (`table`/`tr`/`th`/`td`), blockquotes, code blocks, and inline formatting (`b`/`i`/`u`/`s`/`sup`/`sub`/`code`/`mark`).
+  - Implemented `EbookTextBlock` with shared `TextSelectionHandle` registration for cross-paragraph drag selection, `Ctrl+C`, highlights, notes, and dictionary lookup, plus `TextLayout::index_for_position` hit-testing for clickable footnotes and internal chapter links.
+  - Added cached `data:` URI image decoding with click-to-lightbox support.
+- **Microsoft Reader `.lit` Export (`ebook-rs` `v0.19.1`)**:
+  - Added `Microsoft Reader (.lit)` to the Export / Convert modal (`Legacy & AI`) and save-dialog filters, with export and round-trip parsing tests in `src/export.rs`.
+
+### Changed & Improved
+- **Upgraded `ebook-rs` to `v0.19.3`** (from `v0.19.0`):
+  - Configured `AssetDeliveryStrategy::InlinedStyle` on opened books (`src/main.rs`) so `ebook-rs` merges book stylesheets and runs `inline_stylesheet_rules` onto HTML elements before rendering.
+  - Gains upstream `.lit` codec support (`0.19.1`) and MOBI/KF8/EPUB 3/FB2 parsing & export fixes.
+- **Dependency Graph Update**: Ran `cargo update` locking 12 crates to their highest Rust 1.90 compatible versions (`ebook-rs 0.19.3`, `zip 9.8.2`, `gpui-fast-macros 0.1.19`, `hyper 1.13.0`, `hashbrown 0.17.2`, `ahash 0.8.13`, `anyhow 1.0.105`, etc.).
+
 ## [0.9.0] - 2026-11-21
 
 ### Added

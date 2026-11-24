@@ -21,7 +21,7 @@ pub fn sanitize_filename(title: &str) -> String {
     }
 }
 
-/// Export `book` to the format implied by `path`'s extension using `ebook-rs` 0.19.0
+/// Export `book` to the format implied by `path`'s extension using `ebook-rs` 0.19.3
 /// multi-format codecs, or RAG chunks JSON for `.json`.
 pub fn export_book_bytes(
     book: &ebook_rs::Book,
@@ -317,6 +317,7 @@ mod tests {
             "mobi",
             "azw3",
             "pdb",
+            "lit",
             "pdf",
             "fb2",
             "html",
@@ -347,9 +348,9 @@ mod tests {
             assert!(!bytes.is_empty(), "exported .{ext} should not be empty");
         }
 
-        // Verify round-trip parsing for newly introduced 0.19.0 input codecs
+        // Verify round-trip parsing for 0.19.x input codecs (including 0.19.1 .lit)
         for ext in [
-            "html", "htmlz", "txtz", "oeb", "pdb", "pmlz", "rb", "tcr", "pptx",
+            "html", "htmlz", "txtz", "oeb", "pdb", "lit", "pmlz", "rb", "tcr", "pptx",
         ] {
             let path = Path::new("out").with_file_name(format!("book.{ext}"));
             let bytes = export_book_bytes(&book, &path).expect("export for round-trip");

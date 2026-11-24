@@ -68,6 +68,16 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.9.1" date="2026-11-24">
+      <description>
+        <p>
+          Added a custom full-fidelity EbookDomTree-to-GPUI renderer with native CSS box
+          borders, padding, margins, alignment, tables, lists, cross-block text selection,
+          and clickable footnotes/images; upgraded ebook-rs to 0.19.3 with InlinedStyle CSS
+          inlining and Microsoft Reader (.lit) export support.
+        </p>
+      </description>
+    </release>
     <release version="0.9.0" date="2026-11-21">
       <description>
         <p>

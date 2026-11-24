@@ -89,7 +89,7 @@ Prebuilt artifacts are attached to every [GitHub Release](https://github.com/SV-
 | Windows x64 | `eparna-x86_64-pc-windows-msvc.zip` | Portable build, no install needed |
 | macOS (Apple Silicon) | `eparna-aarch64-apple-darwin.pkg` | Double-click installer |
 | macOS (Intel) | `eparna-x86_64-apple-darwin.pkg` | Double-click installer |
-| Linux x64 | `eparna_0.9.0_x86_64.AppImage` | Single file; `chmod +x` and run |
+| Linux x64 | `eparna_0.9.1_x86_64.AppImage` | Single file; `chmod +x` and run |
 | Any | `eparna-installer.sh` / `eparna-installer.ps1` | `curl \| sh` / `irm \| iex` |
 
 Or install with the one-liner scripts:
@@ -281,7 +281,7 @@ eParna/
 
 | Crate     | Version | Purpose                          |
 |-----------|---------|----------------------------------|
-| ebook-rs  | 0.19.0  | Multi-format parsing & 21+ format export, search, TOC, covers, validation, EPUB optimizer, analytics, citations |
+| ebook-rs  | 0.19.3  | Multi-format parsing & 22+ format export, search, TOC, covers, validation, EPUB optimizer, analytics, citations |
 | gpui-kit  | 0.10.0  | UI framework & components (powered by gpui-fast) |
 | rfd       | 0.17    | Native file dialogs              |
 | serde     | 1       | State serialization              |

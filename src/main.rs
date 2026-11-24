@@ -4,6 +4,7 @@ mod html_utils;
 mod library;
 mod models;
 mod network;
+mod renderer;
 mod stardict;
 mod ui_helpers;
 
@@ -33,6 +34,7 @@ use crate::html_utils::*;
 use crate::library::*;
 use crate::models::*;
 use crate::network::*;
+use crate::renderer::{ImageCache, RenderConfig, render_ebook_dom};
 use crate::stardict::StarDict;
 use crate::ui_helpers::*;
 
@@ -145,6 +147,11 @@ struct ReaderView {
     cached_progress: f32,
     cached_constrained_html: String,
     cached_column_px: f32,
+    cached_dom: Option<ebook_rs::EbookDomTree>,
+    cached_dom2: Option<(usize, ebook_rs::EbookDomTree)>,
+    page1_selection: Option<gpui_kit::base::TextSelectionHandle>,
+    page2_selection: Option<gpui_kit::base::TextSelectionHandle>,
+    image_cache: ImageCache,
 
     // Resizable & collapsible sidebar, export format picker, synced gpui-kit theme mode
     sidebar_open: bool,
@@ -303,6 +310,11 @@ impl ReaderView {
             cached_progress: 0.0,
             cached_constrained_html: String::new(),
             cached_column_px: 0.0,
+            cached_dom: None,
+            cached_dom2: None,
+            page1_selection: Some(gpui_kit::base::TextSelectionHandle::new("", cx)),
+            page2_selection: Some(gpui_kit::base::TextSelectionHandle::new("", cx)),
+            image_cache: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
             sidebar_open: false,
             sidebar_width: 260.0,
             export_modal: false,
@@ -390,6 +402,9 @@ impl ReaderView {
             };
         match book_result {
             Ok(mut book) => {
+                // Deliver merged book CSS and inline matching <style> rules onto elements
+                // so stripping <head> in `prepare_section_html` preserves publisher styling.
+                book.layout_mut().asset_delivery = ebook_rs::AssetDeliveryStrategy::InlinedStyle;
                 if book.locations().total_locations == 0 {
                     book.generate_locations(1000);
                 }
@@ -556,14 +571,20 @@ impl ReaderView {
         cx.notify();
     }
 
-    fn load_current(&mut self, _cx: &mut Context<Self>) {
+    fn load_current(&mut self, cx: &mut Context<Self>) {
         self.cached_word_count = 0;
         self.cached_progress = 0.0;
+        self.cached_dom = None;
+        self.cached_dom2 = None;
+        self.page1_selection = Some(gpui_kit::base::TextSelectionHandle::new("", cx));
+        self.page2_selection = Some(gpui_kit::base::TextSelectionHandle::new("", cx));
         let column_px = (self.max_width - 2.0 * self.margin).max(160.0);
         if let Some(book) = &self.book {
             match book.get_section(self.current) {
                 Ok(sec) => {
                     self.cached_word_count = sec.plain_text.split_whitespace().count();
+                    let inlined_svg = inline_svg_images(&sec.processed_html, book, &sec.full_path);
+                    self.cached_dom = Some(ebook_rs::EbookDomTree::parse(&inlined_svg));
                     let current_annotations: Vec<Annotation> = self
                         .annotations
                         .iter()
@@ -586,8 +607,17 @@ impl ReaderView {
                     );
                 }
                 Err(e) => {
-                    self.html = format!("<p>Error: {}</p>", e);
+                    let err_html = format!("<p>Error: {}</p>", e);
+                    self.cached_dom = Some(ebook_rs::EbookDomTree::parse(&err_html));
+                    self.html = err_html;
                 }
+            }
+            if self.two_page
+                && let Ok(sec2) = book.get_section(self.current + 1)
+            {
+                let inlined2 = inline_svg_images(&sec2.processed_html, book, &sec2.full_path);
+                self.cached_dom2 =
+                    Some((self.current + 1, ebook_rs::EbookDomTree::parse(&inlined2)));
             }
             if !book.sections().is_empty() {
                 let cfi = book
@@ -1859,7 +1889,10 @@ Sidebars & Panels:
             .add_filter("reStructuredText", &["rst"])
             .add_filter("HTMLZ / TXTZ", &["htmlz", "txtz"])
             .add_filter("OEB / ZIP", &["oeb", "zip"])
-            .add_filter("Legacy (PDB/PMLZ/RB/TCR)", &["pdb", "pmlz", "rb", "tcr"])
+            .add_filter(
+                "Legacy (LIT/PDB/PMLZ/RB/TCR)",
+                &["lit", "pdb", "pmlz", "rb", "tcr"],
+            )
             .add_filter("RAG Chunks JSON", &["json"])
             .save_file();
         let Some(path) = chosen else {
@@ -3250,65 +3283,101 @@ impl Render for ReaderView {
             Panel::None => None,
         };
 
-        let html2 = if self.two_page {
-            if let Some(book) = &self.book {
-                book.get_section(self.current + 1)
-                    .map(|s| {
-                        let current_annotations: Vec<Annotation> = self
-                            .annotations
-                            .iter()
-                            .filter(|a| a.section == self.current + 1)
-                            .cloned()
-                            .collect();
-                        let active_search = if self.active_search_query.trim().is_empty() {
-                            None
-                        } else {
-                            Some(self.active_search_query.as_str())
-                        };
-                        let prepared = prepare_section_html(
-                            &s.processed_html,
-                            book,
-                            &s.full_path,
-                            &current_annotations,
-                            active_search,
-                            &self.theme,
-                            self.justify,
-                        );
-                        constrain_images(&prepared, column_px)
-                    })
-                    .unwrap_or_default()
+        let dom2 = if self.two_page {
+            if let Some((idx, dom)) = &self.cached_dom2
+                && *idx == self.current + 1
+            {
+                Some(dom.clone())
+            } else if let Some(book) = &self.book {
+                book.get_section(self.current + 1).ok().map(|s| {
+                    let inlined = inline_svg_images(&s.processed_html, book, &s.full_path);
+                    ebook_rs::EbookDomTree::parse(&inlined)
+                })
             } else {
-                String::new()
+                None
             }
         } else {
-            String::new()
+            None
         };
         let view = cx.entity().clone();
-        let page = |id: String, h: String| {
-            let page_div = div()
-                .min_w(px(0.0))
-                .max_w(px(max_width))
-                .w_full()
-                .h_full()
-                .px(px(margin))
-                .text_size(px(font_size))
-                .line_height(px(font_size * line_height))
-                .font_family(self.font_family.clone())
-                .text_align(TextAlign::Left)
-                .overflow_hidden();
-            page_div.child(
-                TextView::html(id.clone(), h)
-                    .selectable(true)
-                    .scrollable(true)
-                    .on_link_click({
-                        let view = view.clone();
-                        move |url, _event, _window, cx| {
-                            let url = url.to_string();
-                            view.update(cx, |v, cx| v.handle_link_click(&url, cx));
-                        }
-                    }),
-            )
+        let on_link_click: crate::renderer::LinkClickCallback = std::sync::Arc::new({
+            let view = view.clone();
+            move |url: &str, _window: &mut Window, cx: &mut App| {
+                let url = url.to_string();
+                view.update(cx, |v, cx| v.handle_link_click(&url, cx));
+            }
+        });
+        let active_search = if self.active_search_query.trim().is_empty() {
+            None
+        } else {
+            Some(self.active_search_query.as_str())
         };
+        let render_page =
+            |id: String,
+             section_idx: usize,
+             dom: Option<&ebook_rs::EbookDomTree>,
+             fallback_html: String,
+             sel_handle: Option<gpui_kit::base::TextSelectionHandle>| {
+                let page_div = div()
+                    .min_w(px(0.0))
+                    .max_w(px(max_width))
+                    .w_full()
+                    .h_full()
+                    .px(px(margin))
+                    .text_size(px(font_size))
+                    .line_height(px(font_size * line_height))
+                    .font_family(self.font_family.clone())
+                    .text_align(TextAlign::Left)
+                    .overflow_hidden();
+
+                if let Some(dom) = dom {
+                    let sec_annotations: Vec<Annotation> = self
+                        .annotations
+                        .iter()
+                        .filter(|a| a.section == section_idx)
+                        .cloned()
+                        .collect();
+                    let cfg = RenderConfig {
+                        id_prefix: &id,
+                        theme: &self.theme,
+                        palette,
+                        base_font_size: font_size,
+                        line_height,
+                        font_family: &self.font_family,
+                        justify: self.justify,
+                        rtl_mode: self.rtl_mode,
+                        column_px,
+                        annotations: &sec_annotations,
+                        active_search,
+                        selection_handle: sel_handle,
+                        image_cache: &self.image_cache,
+                        on_link_click: on_link_click.clone(),
+                    };
+                    let rendered = render_ebook_dom(dom, &cfg);
+                    page_div.child(
+                        div()
+                            .id(SharedString::from(format!("{id}-scroll")))
+                            .w_full()
+                            .h_full()
+                            .overflow_y_scrollbar()
+                            .py_2()
+                            .child(rendered),
+                    )
+                } else {
+                    page_div.child(
+                        TextView::html(id.clone(), fallback_html)
+                            .selectable(true)
+                            .scrollable(true)
+                            .on_link_click({
+                                let view = view.clone();
+                                move |url, _event, _window, cx| {
+                                    let url = url.to_string();
+                                    view.update(cx, |v, cx| v.handle_link_click(&url, cx));
+                                }
+                            }),
+                    )
+                }
+            };
         let margin_prev = div().flex().items_center().px_1().child(
             Button::new("edge-prev")
                 .ghost()
@@ -3345,8 +3414,20 @@ impl Render for ReaderView {
                     .flex_1()
                     .h_full()
                     .overflow_hidden()
-                    .child(page("content".to_string(), html.clone()))
-                    .child(page("content2".to_string(), html2))
+                    .child(render_page(
+                        "content".to_string(),
+                        self.current,
+                        self.cached_dom.as_ref(),
+                        html.clone(),
+                        self.page1_selection.clone(),
+                    ))
+                    .child(render_page(
+                        "content2".to_string(),
+                        self.current + 1,
+                        dom2.as_ref(),
+                        String::new(),
+                        self.page2_selection.clone(),
+                    ))
                     .into_any_element()
             } else {
                 div()
@@ -3356,7 +3437,13 @@ impl Render for ReaderView {
                     .overflow_hidden()
                     .flex()
                     .justify_center()
-                    .child(page("content".to_string(), html.clone()))
+                    .child(render_page(
+                        "content".to_string(),
+                        self.current,
+                        self.cached_dom.as_ref(),
+                        html.clone(),
+                        self.page1_selection.clone(),
+                    ))
                     .into_any_element()
             })
             .child(margin_next);
@@ -3566,6 +3653,7 @@ impl Render for ReaderView {
                 (
                     "Legacy & AI",
                     &[
+                        ("Microsoft Reader (.lit)", "lit"),
                         ("PalmDB (.pdb)", "pdb"),
                         ("PMLZ", "pmlz"),
                         ("Rocket eBook (.rb)", "rb"),

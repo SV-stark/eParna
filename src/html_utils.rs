@@ -400,4 +400,15 @@ mod tests {
         assert!(theme_style_override("Solarized").contains("#657b83 !important"));
         assert_eq!(theme_style_override("Light"), "");
     }
+
+    #[test]
+    fn test_prepare_section_html_preserves_inlined_style_after_head_strip() {
+        let epub = ebook_rs::sample_builder::generate_sample_epub().expect("sample epub");
+        let book = ebook_rs::Book::from_bytes(&epub).expect("parse sample epub");
+        let raw_html = r#"<html><head><style>.lead { font-style: italic; }</style></head><body><p class="lead">Hello</p></body></html>"#;
+        let inlined = ebook_rs::inline_stylesheet_rules(raw_html);
+        let prepared = prepare_section_html(&inlined, &book, "", &[], None, "Light", false);
+        assert!(!prepared.contains("<head>"));
+        assert!(prepared.contains(r#"<p class="lead" style="font-style: italic">Hello</p>"#));
+    }
 }
