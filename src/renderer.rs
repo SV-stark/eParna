@@ -103,10 +103,8 @@ fn adapt_fg_for_theme(color: Hsla, theme: &str, palette: &ThemePalette) -> Hsla 
         if hsla_luminance(color) < 0.25 {
             return palette.fg;
         }
-    } else if matches!(theme, "Sepia" | "Solarized" | "E-Ink") {
-        if hsla_luminance(color) < 0.15 {
-            return palette.fg;
-        }
+    } else if matches!(theme, "Sepia" | "Solarized" | "E-Ink") && hsla_luminance(color) < 0.15 {
+        return palette.fg;
     }
     color
 }
@@ -628,15 +626,13 @@ where
             style.background_color = Some(rgb(0xffd54f).into());
             style.color = Some(rgb(0x111111).into());
         }
-        "a" => {
-            if attrs.contains_key("href") {
-                style.color = Some(if is_dark_theme(cfg.theme) {
-                    rgb(0x8ab4f8).into()
-                } else {
-                    rgb(0x2563eb).into()
-                });
-                style.underline = true;
-            }
+        "a" if attrs.contains_key("href") => {
+            style.color = Some(if is_dark_theme(cfg.theme) {
+                rgb(0x8ab4f8).into()
+            } else {
+                rgb(0x2563eb).into()
+            });
+            style.underline = true;
         }
         _ => {}
     }
@@ -1697,13 +1693,12 @@ fn find_svg_image_href(nodes: &[DomNode]) -> Option<String> {
             children,
         } = n
         {
-            if tag_name.eq_ignore_ascii_case("image") {
-                if let Some(v) = attributes
+            if tag_name.eq_ignore_ascii_case("image")
+                && let Some(v) = attributes
                     .get("href")
                     .or_else(|| attributes.get("xlink:href"))
-                {
-                    return Some(v.to_string());
-                }
+            {
+                return Some(v.to_string());
             }
             if let Some(found) = find_svg_image_href(children) {
                 return Some(found);
