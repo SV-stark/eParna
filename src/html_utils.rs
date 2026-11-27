@@ -52,6 +52,7 @@ pub fn constrain_images(html: &str, column_px: f32) -> String {
 /// Generate CSS overrides for Dark, Sepia, Nord, Solarized, and E-Ink themes
 /// to prevent publisher stylesheets with hardcoded black text or white backgrounds
 /// from blinding the reader.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn theme_style_override(theme: &str) -> &'static str {
     match theme {
         "Dark" => {
@@ -80,6 +81,7 @@ pub fn theme_style_override(theme: &str) -> &'static str {
 }
 
 /// Safely highlights occurrences of `query` within text nodes only (never inside HTML tags or attributes).
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn highlight_in_html(html: &str, query: &str, style: &str) -> String {
     let trimmed = query.trim();
     if trimmed.is_empty() || !html.to_lowercase().contains(&trimmed.to_lowercase()) {
@@ -140,6 +142,7 @@ pub fn highlight_in_html(html: &str, query: &str, style: &str) -> String {
 /// Turn a section's `processed_html` into something the GPUI renderer can show,
 /// with dark-mode styling overrides, visual in-text highlights, active search highlights,
 /// and optional text justification.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn prepare_section_html(
     html: &str,
     book: &Book,
@@ -185,6 +188,7 @@ pub fn prepare_section_html(
 
 /// Wrap every `<img>` in an `<a href="img:...">` so clicking an image opens
 /// the lightbox modal.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn make_images_clickable(html: &str) -> String {
     if !html.contains("<img") {
         return html.to_string();
@@ -210,6 +214,7 @@ pub fn make_images_clickable(html: &str) -> String {
     out
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn extract_img_src(tag: &str) -> Option<String> {
     for q in ['"', '\''] {
         let pat = format!("src={}", q);
@@ -240,6 +245,7 @@ pub fn current_page_label(book: &Book, current: usize) -> Option<String> {
 }
 
 /// Remove every `<tag …>…</tag>` block, keeping everything around it.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn strip_element(html: &str, tag: &str) -> String {
     let open = format!("<{tag}");
     let close = format!("</{tag}>");

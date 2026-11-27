@@ -17,28 +17,20 @@ Built on [ebook-rs](https://crates.io/crates/ebook-rs) for multi-format parsing 
 - **Multi-format support** — EPUB 2/3, KEPUB, KFX, MOBI, AZW3, FB2, LIT, CBZ, PDF,
   ODT, DOCX, PPTX, RTF, HTML/HTMLZ, TXT/TXTZ, OEB/OPF, PDB, PMLZ, RB, TCR, Markdown,
   Typst, AsciiDoc, Org-mode, reStructuredText, and LaTeX, detected automatically from file contents.
-- **Text selection** — drag to select, `Ctrl+C` (or **Copy**) to copy the
-  selection, and **Highlight** to save it.
-- **Highlights & notes** — highlights capture the quoted passage; notes quote
-  whatever is selected. Click any entry to jump back to it. Export as Markdown.
-- **Library view** — a cover-forward grid of books (caching covers up to 3 MiB, including SVG) with a "Continue reading" row for works in progress; each tile shows cover, title, author and format with a progress bar and Open/Resume, favourite and remove actions. Filtering, sorting, one-click reopen, and an **About eParna** dialog (click logo/title) included.
+- **Text selection & floating toolbar** — drag to select across paragraphs, `Ctrl+C` (or **Copy**) to copy, and use the floating selection bar to highlight in 5 colors, **Define** (dictionary lookup), or **Speak** (TTS).
+- **Highlights & notes** — highlights capture the quoted passage; notes quote whatever is selected. Click any entry to jump back to it. Export as Markdown or **W3C Web Annotation JSON-LD** (with `SpecificResource` `source` IRI).
+- **Library view & recovery** — a cover-forward grid of books (async cover backfill up to 3 MiB, including SVG) with a "Continue reading" row, filtering, sorting, drag-and-drop opening, missing-file **Locate…** relinking (preserving annotations/bookmarks), and an **About eParna** dialog.
 - **Deduplication** — the same book opened from another path updates the existing
   entry (content-hash based) instead of adding a duplicate.
 - **Custom GPU-accelerated eBook renderer** — walks `EbookDomTree` directly into GPUI `div()` elements with `gpui-fast`, preserving publisher CSS borders, padding, margins, backgrounds, tables, lists, alignment, cross-block text selection, and clickable footnotes/links.
 - **Inlined assets** — images and resources are embedded (base64) by ebook-rs, so sections render offline.
-- **Table of contents** — jump to any chapter via the Contents selector, or deep-search
-  the TOC by title with breadcrumbs.
+- **Table of contents & Landmarks** — jump to any chapter or EPUB 3 Landmark via the Contents sidebar, or deep-search the TOC by title with breadcrumbs.
+- **Command Palette (`Ctrl+K`)** — quick fuzzy launcher for Landmarks, Chapters, Themes, and Reader Actions.
 - **Bookmarks** — toggle and revisit bookmarked sections.
-- **Reliable resume** — reading position is stored as a Readium CFI, so you return
-  to the same passage even if the book has been re-converted or re-parsed.
-- **In-book search** — full-text search with result snippets, jump-to-result, regex
-  mode, and a configurable result cap.
-- **Book info** — author, publisher, language, dates, subjects, identifier, rights
-  and description, plus a structural validation report.
-- **Multi-format Export / Convert & EPUB 3 Optimizer** — convert any supported book to
-  22+ output formats (EPUB 3, KEPUB, KFX, MOBI, AZW3, LIT, PDF, DOCX, ODT, RTF, PPTX, FB2, HTML5,
-  Markdown, TXT, LaTeX, Typst, AsciiDoc, Org, RST, HTMLZ, TXTZ, OEB, PDB, PMLZ, RB, TCR) or
-  RAG Chunks JSON, and losslessly optimize EPUB 3 packages (asset deduplication & CSS purging).
+- **Reliable resume** — reading position is stored as a Readium CFI plus exact mid-chapter scroll fraction, so you return to the exact spot even across restarts.
+- **In-book search** — full-text search with result snippets, jump-to-result, regex mode, a configurable result cap, and **Readium Search JSON** export.
+- **Book info** — author, publisher, language, dates, subjects, identifier, rights, description, total estimated reading time, and a structural validation report.
+- **Multi-format Export / Convert & EPUB 3 Optimizer** — convert any supported book asynchronously to 22+ output formats (EPUB 3, KEPUB, KFX, MOBI, AZW3, LIT, PDF, DOCX, ODT, RTF, PPTX, FB2, HTML5, Markdown, TXT, LaTeX, Typst, AsciiDoc, Org, RST, HTMLZ, TXTZ, OEB, PDB, PMLZ, RB, TCR), **WebPub Manifest** (`.webpub.json`), or RAG Chunks JSON, and losslessly optimize EPUB 3 packages (asset deduplication & CSS purging).
 - **OS Built-in Text-to-Speech (TTS)** — read aloud the current section or selected passage using your OS speech engine (`V` shortcut or **Speak** button) with `0.5x`–`2.5x` speed control.
 - **Themes** — Light, Sepia, Dark, OLED Black, Nord, Solarized, Solarized Dark, E-Ink, and Custom.
 - **Typography, floating popovers & collapsible sidebar** — a floating **Aa**
@@ -87,7 +79,7 @@ Prebuilt artifacts are attached to every [GitHub Release](https://github.com/SV-
 | Windows x64 | `eparna-x86_64-pc-windows-msvc.zip` | Portable build, no install needed |
 | macOS (Apple Silicon) | `eparna-aarch64-apple-darwin.pkg` | Double-click installer |
 | macOS (Intel) | `eparna-x86_64-apple-darwin.pkg` | Double-click installer |
-| Linux x64 | `eparna_0.9.2_x86_64.AppImage` | Single file; `chmod +x` and run |
+| Linux x64 | `eparna_0.9.3_x86_64.AppImage` | Single file; `chmod +x` and run |
 | Any | `eparna-installer.sh` / `eparna-installer.ps1` | `curl \| sh` / `irm \| iex` |
 
 Or install with the one-liner scripts:
@@ -279,7 +271,7 @@ eParna/
 
 | Crate     | Version | Purpose                          |
 |-----------|---------|----------------------------------|
-| ebook-rs  | 0.19.3  | Multi-format parsing & 22+ format export, search, TOC, covers, validation, EPUB optimizer, analytics, citations |
+| ebook-rs  | 0.20.0  | Multi-format parsing & 22+ format export, search, TOC/landmarks, covers, validation, EPUB optimizer, analytics, citations, progress |
 | gpui-kit  | 0.10.0  | UI framework & components (powered by gpui-fast) |
 | rfd       | 0.17    | Native file dialogs              |
 | tts       | 0.26    | OS built-in Text-to-Speech       |
@@ -288,10 +280,8 @@ eParna/
 | ureq      | 3       | OPDS catalogs & online lookups   |
 | base64    | 0.23    | Cover thumbnails                 |
 
-`ebook-rs` is used with the `serde`, `opds`, `pdf`, `parallel`, `mmap` and `zstd`
-features enabled (in-memory PDF parsing via `unpdf`, parallel ZIP export, memory-mapped I/O and Zstd
-state caching). With `ebook-rs 0.18.0`, PDF parsing is purely in-memory (no disk spooling)
-and the previous transitive dependency pin on `office_oxide = "=0.1.11"` has been eliminated.
+`ebook-rs` is used with the `serde`, `opds`, `pdf`, `parallel`, and `mmap`
+features enabled (pure-Rust in-memory PDF parsing via `unpdf`, parallel ZIP export, and zero-copy memory-mapped I/O for large files).
 
 ## License
 

@@ -56,6 +56,17 @@ pub fn mime_ext(mime: &str) -> &'static str {
     }
 }
 
+/// Open a book from a path, using zero-copy memory mapping for files > 16 MiB.
+pub fn open_book_path(path: &Path) -> Result<ebook_rs::Book, ebook_rs::EbookError> {
+    if path.is_file()
+        && std::fs::metadata(path).map(|m| m.len()).unwrap_or(0) > 16 * 1024 * 1024
+        && let Ok(book) = ebook_rs::Book::from_mmap(path)
+    {
+        return Ok(book);
+    }
+    ebook_rs::Book::from_file(path)
+}
+
 pub fn cache_cover_to_disk(book: &ebook_rs::Book, path: &str) -> String {
     let Some((bytes, mime)) = book.cover_image() else {
         return String::new();
@@ -108,7 +119,7 @@ pub fn scan_folder_books(
         if existing_paths.contains(&key) {
             continue;
         }
-        if let Ok(book) = ebook_rs::Book::from_file(&p) {
+        if let Ok(book) = open_book_path(&p) {
             let file_size = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
             let content_hash = if file_size <= 32 * 1024 * 1024 {
                 book.fingerprint().content_hash
@@ -138,6 +149,7 @@ pub fn scan_folder_books(
                 total,
                 cover,
                 reading_time_secs: 0,
+                scroll_fraction: 0.0,
             });
         }
     }

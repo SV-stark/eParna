@@ -1,7 +1,7 @@
 use crate::models::Annotation;
 use crate::ui_helpers::{ThemePalette, highlight_swatch_color};
 use base64::Engine as _;
-use ebook_rs::{DomNode, EbookDomTree, decode_html_entities};
+use ebook_rs::{DomNode, EbookDomTree, SyntaxHighlightEngine, decode_html_entities};
 use gpui_kit::base::{
     TextSelectionHandle, TextSelectionRegistration, TextSelectionRun, h_flex, v_flex,
 };
@@ -16,6 +16,7 @@ pub type ImageCache = Arc<Mutex<HashMap<String, Arc<Image>>>>;
 /// Render configuration for a single reading column.
 pub struct RenderConfig<'a> {
     pub id_prefix: &'a str,
+    pub order_base: u64,
     pub theme: &'a str,
     pub palette: ThemePalette,
     pub base_font_size: f32,
@@ -26,7 +27,6 @@ pub struct RenderConfig<'a> {
     pub column_px: f32,
     pub annotations: &'a [Annotation],
     pub active_search: Option<&'a str>,
-    pub selection_handle: Option<TextSelectionHandle>,
     pub image_cache: &'a ImageCache,
     pub on_link_click: LinkClickCallback,
 }
@@ -633,6 +633,47 @@ where
             style.background_color = Some(rgb(0xffd54f).into());
             style.color = Some(rgb(0x111111).into());
         }
+        "figure" => {
+            style.margin[0] = Some(base_fs * 0.8);
+            style.margin[2] = Some(base_fs * 0.8);
+            style.text_align = Some(TextAlign::Center);
+        }
+        "figcaption" => {
+            style.font_size_px = Some((base_fs * 0.88).max(11.0));
+            style.font_style = Some(FontStyle::Italic);
+            style.color = Some(cfg.palette.muted);
+            style.margin[0] = Some(4.0);
+            style.text_align = Some(TextAlign::Center);
+        }
+        "dl" => {
+            style.margin[0] = Some(base_fs * 0.5);
+            style.margin[2] = Some(base_fs * 0.5);
+        }
+        "dt" => {
+            style.font_weight = Some(FontWeight::BOLD);
+            style.margin[0] = Some(base_fs * 0.4);
+        }
+        "dd" => {
+            style.margin[3] = Some(20.0);
+            style.margin[2] = Some(base_fs * 0.35);
+        }
+        "details" => {
+            style.background_color = Some(cfg.palette.surface);
+            style.border_widths = [1.0, 1.0, 1.0, 1.0];
+            style.border_colors = [
+                Some(cfg.palette.border),
+                Some(cfg.palette.border),
+                Some(cfg.palette.border),
+                Some(cfg.palette.border),
+            ];
+            style.border_radius = Some(6.0);
+            style.padding = [Some(8.0), Some(12.0), Some(8.0), Some(12.0)];
+            style.margin[2] = Some(base_fs * 0.65);
+        }
+        "summary" => {
+            style.font_weight = Some(FontWeight::SEMIBOLD);
+            style.margin[2] = Some(4.0);
+        }
         "a" if attrs.contains_key("href") => {
             style.color = Some(if is_palette_dark(cfg.theme, &cfg.palette) {
                 rgb(0x8ab4f8).into()
@@ -902,6 +943,108 @@ impl InlineFlow {
     }
 }
 
+fn extract_lang_from_attrs<K, V, S>(attrs: &HashMap<K, V, S>) -> Option<String>
+where
+    K: std::borrow::Borrow<str> + Eq + std::hash::Hash,
+    V: AsRef<str>,
+    S: std::hash::BuildHasher,
+{
+    let class = attrs.get("class")?.as_ref();
+    for token in class.split_whitespace() {
+        if let Some(lang) = token
+            .strip_prefix("language-")
+            .or_else(|| token.strip_prefix("lang-"))
+            && !lang.is_empty()
+        {
+            return Some(lang.to_string());
+        }
+    }
+    None
+}
+
+fn collect_code_text(nodes: &[DomNode], out: &mut String, lang: &mut Option<String>) -> bool {
+    for node in nodes {
+        match node {
+            DomNode::Comment(_) => {}
+            DomNode::Text(t) => out.push_str(&decode_html_entities(t)),
+            DomNode::Element {
+                tag_name,
+                attributes,
+                children,
+            } => {
+                let tag = tag_name.to_ascii_lowercase();
+                if tag == "br" {
+                    out.push('\n');
+                    continue;
+                }
+                if !matches!(tag.as_str(), "code" | "span" | "kbd" | "samp" | "tt") {
+                    return false;
+                }
+                if lang.is_none() {
+                    *lang = extract_lang_from_attrs(attributes);
+                }
+                if !collect_code_text(children, out, lang) {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
+fn extract_plain_code_block<K, V, S>(
+    nodes: &[DomNode],
+    pre_attrs: &HashMap<K, V, S>,
+) -> Option<(String, String)>
+where
+    K: std::borrow::Borrow<str> + Eq + std::hash::Hash,
+    V: AsRef<str>,
+    S: std::hash::BuildHasher,
+{
+    let mut code = String::new();
+    let mut lang = extract_lang_from_attrs(pre_attrs);
+    if !collect_code_text(nodes, &mut code, &mut lang) {
+        return None;
+    }
+    Some((code, lang.unwrap_or_else(|| "text".to_string())))
+}
+
+fn syntax_node_color(
+    kind: &str,
+    dark: bool,
+) -> Option<(Hsla, Option<FontWeight>, Option<FontStyle>)> {
+    match kind {
+        "comment" => Some((
+            if dark {
+                rgb(0x7f8c8d).into()
+            } else {
+                rgb(0x6a737d).into()
+            },
+            None,
+            Some(FontStyle::Italic),
+        )),
+        "function_definition" => Some((
+            if dark {
+                rgb(0x79b8ff).into()
+            } else {
+                rgb(0x005cc5).into()
+            },
+            Some(FontWeight::SEMIBOLD),
+            None,
+        )),
+        "type_definition" => Some((
+            if dark {
+                rgb(0xffab70).into()
+            } else {
+                rgb(0xb35900).into()
+            },
+            Some(FontWeight::SEMIBOLD),
+            None,
+        )),
+        _ => None,
+    }
+}
+
 fn find_ci_ranges(haystack: &str, needle: &str) -> Vec<Range<usize>> {
     let trimmed = needle.trim();
     if trimmed.is_empty() || haystack.is_empty() {
@@ -909,19 +1052,49 @@ fn find_ci_ranges(haystack: &str, needle: &str) -> Vec<Range<usize>> {
     }
     let h_lower = haystack.to_lowercase();
     let n_lower = trimmed.to_lowercase();
-    if h_lower.len() != haystack.len() {
-        // Fallback: char-safe scan when case folding changes byte lengths
-        return Vec::new();
+    if h_lower.len() == haystack.len() {
+        let mut out = Vec::new();
+        let mut pos = 0;
+        while let Some(idx) = h_lower[pos..].find(&n_lower) {
+            let start = pos + idx;
+            let end = start + n_lower.len();
+            if haystack.is_char_boundary(start) && haystack.is_char_boundary(end) {
+                out.push(start..end);
+            }
+            pos = end.max(pos + 1);
+        }
+        return out;
+    }
+
+    // Unicode-safe mapping when case folding changes UTF-8 byte lengths (e.g. 'İ', 'ß')
+    let mut lower_buf = String::with_capacity(haystack.len());
+    let mut byte_map: Vec<(usize, usize)> = Vec::new();
+    for (orig_start, ch) in haystack.char_indices() {
+        let orig_end = orig_start + ch.len_utf8();
+        for lc in ch.to_lowercase() {
+            let lc_len = lc.len_utf8();
+            lower_buf.push(lc);
+            for _ in 0..lc_len {
+                byte_map.push((orig_start, orig_end));
+            }
+        }
     }
     let mut out = Vec::new();
     let mut pos = 0;
-    while let Some(idx) = h_lower[pos..].find(&n_lower) {
-        let start = pos + idx;
-        let end = start + n_lower.len();
-        if haystack.is_char_boundary(start) && haystack.is_char_boundary(end) {
-            out.push(start..end);
+    while let Some(idx) = lower_buf[pos..].find(&n_lower) {
+        let l_start = pos + idx;
+        let l_end = l_start + n_lower.len();
+        if l_start < byte_map.len() && l_end > 0 && l_end <= byte_map.len() {
+            let orig_start = byte_map[l_start].0;
+            let orig_end = byte_map[l_end - 1].1;
+            if orig_start < orig_end
+                && haystack.is_char_boundary(orig_start)
+                && haystack.is_char_boundary(orig_end)
+            {
+                out.push(orig_start..orig_end);
+            }
         }
-        pos = end.max(pos + 1);
+        pos = l_end.max(pos + 1);
     }
     out
 }
@@ -957,7 +1130,6 @@ pub fn decode_data_uri_image(src: &str, cache: &ImageCache) -> Option<Arc<Image>
 /// Selectable, link-aware GPUI text block that participates in window-wide `TextSelection`.
 struct EbookTextBlock {
     id: ElementId,
-    handle: Option<TextSelectionHandle>,
     text: SharedString,
     styled_text: StyledText,
     document_order: u64,
@@ -966,13 +1138,17 @@ struct EbookTextBlock {
     on_link_click: LinkClickCallback,
 }
 
-#[derive(Default)]
-struct BlockInteractionState {
-    mouse_down_pos: Option<Point<Pixels>>,
+struct RetainedBlockState {
+    handle: TextSelectionHandle,
+    _refresh: Subscription,
+    mouse_down_pos: std::rc::Rc<std::cell::Cell<Option<Point<Pixels>>>>,
 }
 
 impl Element for EbookTextBlock {
-    type RequestLayoutState = Option<TextSelectionHandle>;
+    type RequestLayoutState = (
+        TextSelectionHandle,
+        std::rc::Rc<std::cell::Cell<Option<Point<Pixels>>>>,
+    );
     type PrepaintState = Hitbox;
 
     fn id(&self) -> Option<ElementId> {
@@ -990,12 +1166,30 @@ impl Element for EbookTextBlock {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
+        let (handle, mouse_down_pos) = window.with_element_state(
+            global_id.expect("EbookTextBlock must have a stable element id"),
+            |retained: Option<RetainedBlockState>, window| {
+                let retained = retained.unwrap_or_else(|| {
+                    let handle = TextSelectionHandle::new(self.text.clone(), cx);
+                    let refresh = handle.refresh_window_on_change(window, cx);
+                    RetainedBlockState {
+                        handle,
+                        _refresh: refresh,
+                        mouse_down_pos: std::rc::Rc::new(std::cell::Cell::new(None)),
+                    }
+                });
+                (
+                    (retained.handle.clone(), retained.mouse_down_pos.clone()),
+                    retained,
+                )
+            },
+        );
         let style = self.text_style.clone();
         let (layout_id, ()) = window.with_text_style(Some(style), |window| {
             self.styled_text
                 .request_layout(global_id, inspector_id, window, cx)
         });
-        (layout_id, self.handle.clone())
+        (layout_id, (handle, mouse_down_pos))
     }
 
     fn prepaint(
@@ -1003,20 +1197,18 @@ impl Element for EbookTextBlock {
         global_id: Option<&GlobalElementId>,
         inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
-        handle: &mut Self::RequestLayoutState,
+        (handle, _): &mut Self::RequestLayoutState,
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
         self.styled_text
             .prepaint(global_id, inspector_id, bounds, &mut (), window, cx);
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
-        if let Some(handle) = handle {
-            let registration = TextSelectionRegistration::new(hitbox.clone(), bounds)
-                .with_document_order(self.document_order)
-                .with_text_bounds(vec![bounds])
-                .with_rendered_element(handle, window, cx);
-            handle.register(registration, window, cx);
-        }
+        let registration = TextSelectionRegistration::new(hitbox.clone(), bounds)
+            .with_document_order(self.document_order)
+            .with_text_bounds(vec![bounds])
+            .with_rendered_element(handle, window, cx);
+        handle.register(registration, window, cx);
         hitbox
     }
 
@@ -1025,68 +1217,68 @@ impl Element for EbookTextBlock {
         global_id: Option<&GlobalElementId>,
         inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
-        handle: &mut Self::RequestLayoutState,
+        (handle, mouse_down_pos): &mut Self::RequestLayoutState,
         hitbox: &mut Self::PrepaintState,
         window: &mut Window,
         cx: &mut App,
     ) {
         let layout = self.styled_text.layout().clone();
-        if let Some(handle) = handle {
-            let projection = handle.update_runs(
-                &[
-                    TextSelectionRun::new(self.text.clone(), layout.clone(), bounds)
-                        .with_document_order(self.document_order),
-                ],
-                cx,
-            );
-            let sel_color = gpui_kit::base::Theme::global(cx).tokens.colors.selection;
-            for range in projection.ranges().iter().flatten().cloned() {
-                let (Some(start), Some(end)) = (
-                    layout.position_for_index(range.start),
-                    layout.position_for_index(range.end),
-                ) else {
-                    continue;
-                };
-                let lh = layout.line_height();
-                if start.y == end.y {
-                    window.paint_quad(PaintQuad {
-                        bounds: Bounds::from_corners(start, Point::new(end.x, end.y + lh)),
-                        background: sel_color.into(),
-                        corner_radii: Corners::default(),
-                        border_widths: Edges::default(),
-                        border_color: transparent_black(),
-                        border_style: BorderStyle::default(),
-                    });
-                } else {
-                    let b1 = Bounds::from_corners(start, Point::new(bounds.right(), start.y + lh));
-                    window.paint_quad(PaintQuad {
-                        bounds: b1,
-                        background: sel_color.into(),
-                        corner_radii: Corners::default(),
-                        border_widths: Edges::default(),
-                        border_color: transparent_black(),
-                        border_style: BorderStyle::default(),
-                    });
-                    if end.y > start.y + lh {
-                        let b2 = Bounds::from_corners(
-                            Point::new(bounds.left(), start.y + lh),
-                            Point::new(bounds.right(), end.y),
-                        );
-                        window.paint_quad(PaintQuad {
-                            bounds: b2,
-                            background: sel_color.into(),
-                            corner_radii: Corners::default(),
-                            border_widths: Edges::default(),
-                            border_color: transparent_black(),
-                            border_style: BorderStyle::default(),
-                        });
-                    }
-                    let b3 = Bounds::from_corners(
-                        Point::new(bounds.left(), end.y),
-                        Point::new(end.x, end.y + lh),
+
+        let cursor = if !self.links.is_empty()
+            && hitbox.is_hovered(window)
+            && let Ok(idx) = layout.index_for_position(window.mouse_position())
+            && self.links.iter().any(|(r, _)| r.contains(&idx))
+        {
+            CursorStyle::PointingHand
+        } else {
+            CursorStyle::IBeam
+        };
+        window.set_cursor_style(cursor, hitbox);
+
+        let projection = handle.update_runs(
+            &[
+                TextSelectionRun::new(self.text.clone(), layout.clone(), bounds)
+                    .with_document_order(self.document_order),
+            ],
+            cx,
+        );
+        let layout_bounds = layout.bounds();
+        let sel_color = gpui_kit::base::Theme::global(cx).tokens.colors.selection;
+        for range in projection.ranges().iter().flatten().cloned() {
+            let (Some(start), Some(end)) = (
+                layout.position_for_index(range.start),
+                layout.position_for_index(range.end),
+            ) else {
+                continue;
+            };
+            let lh = layout.line_height();
+            if start.y == end.y {
+                window.paint_quad(PaintQuad {
+                    bounds: Bounds::from_corners(start, Point::new(end.x, end.y + lh)),
+                    background: sel_color.into(),
+                    corner_radii: Corners::default(),
+                    border_widths: Edges::default(),
+                    border_color: transparent_black(),
+                    border_style: BorderStyle::default(),
+                });
+            } else {
+                let b1 =
+                    Bounds::from_corners(start, Point::new(layout_bounds.right(), start.y + lh));
+                window.paint_quad(PaintQuad {
+                    bounds: b1,
+                    background: sel_color.into(),
+                    corner_radii: Corners::default(),
+                    border_widths: Edges::default(),
+                    border_color: transparent_black(),
+                    border_style: BorderStyle::default(),
+                });
+                if end.y > start.y + lh {
+                    let b2 = Bounds::from_corners(
+                        Point::new(layout_bounds.left(), start.y + lh),
+                        Point::new(layout_bounds.right(), end.y),
                     );
                     window.paint_quad(PaintQuad {
-                        bounds: b3,
+                        bounds: b2,
                         background: sel_color.into(),
                         corner_radii: Corners::default(),
                         border_widths: Edges::default(),
@@ -1094,6 +1286,18 @@ impl Element for EbookTextBlock {
                         border_style: BorderStyle::default(),
                     });
                 }
+                let b3 = Bounds::from_corners(
+                    Point::new(layout_bounds.left(), end.y),
+                    Point::new(end.x, end.y + lh),
+                );
+                window.paint_quad(PaintQuad {
+                    bounds: b3,
+                    background: sel_color.into(),
+                    corner_radii: Corners::default(),
+                    border_widths: Edges::default(),
+                    border_color: transparent_black(),
+                    border_style: BorderStyle::default(),
+                });
             }
         }
 
@@ -1112,37 +1316,35 @@ impl Element for EbookTextBlock {
             let on_click = self.on_link_click.clone();
             let layout_for_click = layout;
             let hb = hitbox.clone();
-            let state = window.use_state(cx, |_, _| BlockInteractionState::default());
 
             window.on_mouse_event({
-                let state = state.clone();
+                let mouse_down_pos = mouse_down_pos.clone();
                 let hb = hb.clone();
-                move |event: &MouseDownEvent, phase, _window, cx| {
+                move |event: &MouseDownEvent, phase, window, _cx| {
                     if phase == DispatchPhase::Bubble
                         && event.button == MouseButton::Left
-                        && hb.is_hovered(_window)
+                        && hb.is_hovered(window)
                     {
-                        state.update(cx, |s, _| s.mouse_down_pos = Some(event.position));
+                        mouse_down_pos.set(Some(event.position));
                     }
                 }
             });
 
             window.on_mouse_event({
-                let state = state;
+                let mouse_down_pos = mouse_down_pos.clone();
                 move |event: &MouseUpEvent, phase, window, cx| {
-                    if phase == DispatchPhase::Bubble && event.button == MouseButton::Left {
-                        let down = state.update(cx, |s, _| s.mouse_down_pos.take());
-                        if let Some(down_pos) = down {
-                            let dx: f32 = (event.position.x - down_pos.x).into();
-                            let dy: f32 = (event.position.y - down_pos.y).into();
-                            if dx * dx + dy * dy <= 25.0
-                                && hb.is_hovered(window)
-                                && let Ok(idx) = layout_for_click.index_for_position(event.position)
-                                && let Some((_, href)) =
-                                    links.iter().find(|(r, _)| r.contains(&idx))
-                            {
-                                on_click(href, window, cx);
-                            }
+                    if phase == DispatchPhase::Bubble
+                        && event.button == MouseButton::Left
+                        && let Some(down_pos) = mouse_down_pos.take()
+                    {
+                        let dx: f32 = (event.position.x - down_pos.x).into();
+                        let dy: f32 = (event.position.y - down_pos.y).into();
+                        if dx * dx + dy * dy <= 25.0
+                            && hb.is_hovered(window)
+                            && let Ok(idx) = layout_for_click.index_for_position(event.position)
+                            && let Some((_, href)) = links.iter().find(|(r, _)| r.contains(&idx))
+                        {
+                            on_click(href, window, cx);
                         }
                     }
                 }
@@ -1285,11 +1487,10 @@ impl<'a> DomWalker<'a> {
         } else {
             StyledText::new(shared.clone()).with_highlights(merged)
         };
-        let order = self.block_seq + 1;
+        let order = self.cfg.order_base + self.block_seq + 1;
         let id = self.next_id("txt");
         let block = EbookTextBlock {
             id,
-            handle: self.cfg.selection_handle.clone(),
             text: shared,
             styled_text,
             document_order: order,
@@ -1492,13 +1693,49 @@ impl<'a> DomWalker<'a> {
                         _ => {
                             // Block element: html, body, div, section, p, h1..h6, blockquote, pre, etc.
                             self.flush_flow(&mut flow, parent_style, &mut out, preserve_ws);
-                            let is_pre = tag == "pre" || preserve_ws;
-                            let child_els = self.render_nodes_into_container(
-                                children,
-                                &node_style,
-                                is_pre,
-                                link,
-                            );
+                            let mut child_els = if tag == "pre"
+                                && link.is_none()
+                                && let Some((code, lang)) =
+                                    extract_plain_code_block(children, attributes)
+                                && !code.trim().is_empty()
+                            {
+                                let nodes = SyntaxHighlightEngine::parse_code(&code, &lang);
+                                let dark = is_palette_dark(self.cfg.theme, &self.cfg.palette);
+                                let mut code_flow = InlineFlow {
+                                    text: code.clone(),
+                                    ..Default::default()
+                                };
+                                for node in nodes {
+                                    if node.start_byte < node.end_byte
+                                        && node.end_byte <= code.len()
+                                        && code.is_char_boundary(node.start_byte)
+                                        && code.is_char_boundary(node.end_byte)
+                                        && let Some((color, font_weight, font_style)) =
+                                            syntax_node_color(&node.kind, dark)
+                                    {
+                                        code_flow.spans.push((
+                                            node.start_byte..node.end_byte,
+                                            HighlightStyle {
+                                                color: Some(color),
+                                                font_weight,
+                                                font_style,
+                                                ..Default::default()
+                                            },
+                                        ));
+                                    }
+                                }
+                                let mut pre_els = Vec::new();
+                                self.flush_flow(&mut code_flow, &node_style, &mut pre_els, true);
+                                pre_els
+                            } else {
+                                let is_pre = tag == "pre" || preserve_ws;
+                                self.render_nodes_into_container(
+                                    children,
+                                    &node_style,
+                                    is_pre,
+                                    link,
+                                )
+                            };
                             if !child_els.is_empty()
                                 || node_style.border_widths.iter().any(|&w| w > 0.0)
                                 || node_style.background_color.is_some()
@@ -1509,7 +1746,7 @@ impl<'a> DomWalker<'a> {
                                     &node_style,
                                     self.cfg.palette.border,
                                 );
-                                block_box = block_box.children(child_els);
+                                block_box = block_box.children(child_els.drain(..));
                                 out.push(block_box.into_any_element());
                             }
                         }
@@ -2077,6 +2314,7 @@ mod tests {
         let cache = Arc::new(Mutex::new(HashMap::new()));
         let cfg = RenderConfig {
             id_prefix: "test",
+            order_base: 0,
             theme: "Light",
             palette,
             base_font_size: 16.0,
@@ -2087,7 +2325,6 @@ mod tests {
             column_px: 640.0,
             annotations: &[],
             active_search: None,
-            selection_handle: None,
             image_cache: &cache,
             on_link_click: Arc::new(|_, _, _| {}),
         };
@@ -2138,5 +2375,113 @@ mod tests {
         let num_style = compute_node_style(&ptag.to_ascii_lowercase(), pattrs, &hdr_style, &cfg);
         assert_eq!(num_style.text_align, Some(TextAlign::Right));
         assert!((num_style.font_size_px.unwrap() - 13.6).abs() < 0.1);
+    }
+
+    #[core::prelude::v1::test]
+    fn test_extract_plain_code_block_and_syntax_highlight() {
+        let html = r#"<pre><code class="language-rust">// greeting
+fn main() {
+    struct Point { x: i32 }
+}</code></pre>"#;
+        let dom = EbookDomTree::parse(html);
+        let Some(DomNode::Element {
+            tag_name,
+            attributes,
+            children,
+        }) = dom.root_nodes.first()
+        else {
+            panic!("expected <pre> element");
+        };
+        assert_eq!(tag_name.to_ascii_lowercase(), "pre");
+        let (code, lang) =
+            extract_plain_code_block(children, attributes).expect("plain code block");
+        assert_eq!(lang, "rust");
+        let nodes = SyntaxHighlightEngine::parse_code(&code, &lang);
+        assert!(nodes.iter().any(|n| n.kind == "comment"));
+        assert!(nodes.iter().any(|n| n.kind == "function_definition"));
+        assert!(nodes.iter().any(|n| n.kind == "type_definition"));
+    }
+
+    #[core::prelude::v1::test]
+    fn test_find_ci_ranges_handles_ascii_and_unicode_case_folding() {
+        let ascii = find_ci_ranges("Hello World, hello!", "hello");
+        assert_eq!(ascii, vec![0..5, 13..18]);
+
+        // 'İ' lowercases to "i\u{307}" (3 bytes vs 2 bytes), changing byte length.
+        let text = "Visit İstanbul and Straße today";
+        let istanbul = find_ci_ranges(text, "İstanbul");
+        assert_eq!(istanbul.len(), 1);
+        assert_eq!(&text[istanbul[0].clone()], "İstanbul");
+        let strasse = find_ci_ranges(text, "straße");
+        assert_eq!(strasse.len(), 1);
+        assert_eq!(&text[strasse[0].clone()], "Straße");
+    }
+
+    #[core::prelude::v1::test]
+    fn test_semantic_html_styles_figure_dl_details() {
+        let html = r#"<html><body>
+            <figure><figcaption>Fig 1</figcaption></figure>
+            <dl><dt>Term</dt><dd>Def</dd></dl>
+            <details><summary>More</summary><p>Body</p></details>
+        </body></html>"#;
+        let dom = EbookDomTree::parse(html);
+        let palette = crate::ui_helpers::theme_palette_for("Light", "", "");
+        let cache = Arc::new(Mutex::new(HashMap::new()));
+        let cfg = RenderConfig {
+            id_prefix: "sem",
+            order_base: 0,
+            theme: "Light",
+            palette,
+            base_font_size: 16.0,
+            line_height: 1.6,
+            font_family: "Georgia",
+            text_align: "Default",
+            rtl_mode: false,
+            column_px: 640.0,
+            annotations: &[],
+            active_search: None,
+            image_cache: &cache,
+            on_link_click: Arc::new(|_, _, _| {}),
+        };
+        let parent = CssBoxStyle::default();
+
+        fn find_tag<'a>(nodes: &'a [DomNode], wanted: &str) -> Option<&'a DomNode> {
+            for n in nodes {
+                if let DomNode::Element {
+                    tag_name, children, ..
+                } = n
+                {
+                    if tag_name.eq_ignore_ascii_case(wanted) {
+                        return Some(n);
+                    }
+                    if let Some(f) = find_tag(children, wanted) {
+                        return Some(f);
+                    }
+                }
+            }
+            None
+        }
+
+        let DomNode::Element { attributes, .. } = find_tag(&dom.root_nodes, "figcaption").unwrap()
+        else {
+            unreachable!()
+        };
+        let figcap = compute_node_style("figcaption", attributes, &parent, &cfg);
+        assert_eq!(figcap.font_style, Some(FontStyle::Italic));
+        assert_eq!(figcap.text_align, Some(TextAlign::Center));
+
+        let DomNode::Element { attributes, .. } = find_tag(&dom.root_nodes, "dd").unwrap() else {
+            unreachable!()
+        };
+        let dd = compute_node_style("dd", attributes, &parent, &cfg);
+        assert_eq!(dd.margin[3], Some(20.0));
+
+        let DomNode::Element { attributes, .. } = find_tag(&dom.root_nodes, "details").unwrap()
+        else {
+            unreachable!()
+        };
+        let details = compute_node_style("details", attributes, &parent, &cfg);
+        assert_eq!(details.border_radius, Some(6.0));
+        assert_eq!(details.border_widths, [1.0, 1.0, 1.0, 1.0]);
     }
 }

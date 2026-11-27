@@ -42,6 +42,9 @@ pub struct RecentBook {
     /// Accumulated reading time in seconds for this book.
     #[serde(default)]
     pub reading_time_secs: u64,
+    /// Normalized in-section vertical scroll position (0.0..=1.0).
+    #[serde(default)]
+    pub scroll_fraction: f32,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -85,6 +88,7 @@ impl Annotation {
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn highlight_style(&self) -> &'static str {
         match self.color.as_str() {
             "green" => {
@@ -145,6 +149,10 @@ fn default_wpm() -> u32 {
     220
 }
 
+fn default_sidebar_width() -> f32 {
+    260.0
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PersistedState {
@@ -178,6 +186,12 @@ pub struct PersistedState {
     /// Library view presentation: "grid" or "list".
     #[serde(default = "default_view_mode")]
     pub library_view_mode: String,
+    /// Whether the reader sidebar was left open.
+    #[serde(default)]
+    pub sidebar_open: bool,
+    /// Persisted reader sidebar width in logical pixels.
+    #[serde(default = "default_sidebar_width")]
+    pub sidebar_width: f32,
 }
 
 impl Default for PersistedState {
@@ -202,8 +216,27 @@ impl Default for PersistedState {
             total_reading_secs: 0,
             library_folders: Vec::new(),
             library_view_mode: "grid".into(),
+            sidebar_open: false,
+            sidebar_width: 260.0,
         }
     }
+}
+
+/// Relink a missing recent book to a new path on disk, migrating its annotations and bookmarks.
+pub fn relink_recent_book(state: &mut PersistedState, old_path: &str, new_path: String) -> bool {
+    let Some(entry) = state.recent.iter_mut().find(|r| r.path == old_path) else {
+        return false;
+    };
+    entry.path = new_path.clone();
+    if old_path != new_path {
+        if let Some(anns) = state.annotations.remove(old_path) {
+            state.annotations.entry(new_path.clone()).or_insert(anns);
+        }
+        if let Some(bms) = state.bookmarks.remove(old_path) {
+            state.bookmarks.entry(new_path).or_insert(bms);
+        }
+    }
+    true
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -260,6 +293,36 @@ pub fn href_to_index(book: &ebook_rs::Book, href: &str) -> Option<usize> {
             || s.full_path.ends_with(path)
             || (!s.href.is_empty() && path.ends_with(&s.href))
     })
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LandmarkItem {
+    pub label: String,
+    pub epub_type: String,
+    pub section_index: usize,
+}
+
+pub fn build_landmark_items(book: &ebook_rs::Book) -> Vec<LandmarkItem> {
+    let mut items = Vec::new();
+    for lm in book.landmarks() {
+        let Some(section_index) = href_to_index(book, &lm.href) else {
+            continue;
+        };
+        let label = if lm.label.trim().is_empty() {
+            lm.epub_type.trim().to_string()
+        } else {
+            lm.label.trim().to_string()
+        };
+        if label.is_empty() {
+            continue;
+        }
+        items.push(LandmarkItem {
+            label,
+            epub_type: lm.epub_type.clone(),
+            section_index,
+        });
+    }
+    items
 }
 
 pub fn build_toc_items(book: &ebook_rs::Book) -> Vec<TocItem> {
@@ -350,5 +413,42 @@ mod tests {
         assert!(!items.is_empty());
         assert_eq!(items[0].depth, 0);
         assert_eq!(items[0].section_index, 0);
+    }
+
+    #[test]
+    fn test_relink_recent_book_and_sidebar_defaults() {
+        let mut state = PersistedState {
+            recent: vec![RecentBook {
+                path: "/old/book.epub".into(),
+                title: "Book".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        state.annotations.insert(
+            "/old/book.epub".into(),
+            vec![Annotation {
+                quote: "hi".into(),
+                ..Default::default()
+            }],
+        );
+        state.bookmarks.insert("/old/book.epub".into(), vec![1, 3]);
+
+        assert!(relink_recent_book(
+            &mut state,
+            "/old/book.epub",
+            "/new/book.epub".into()
+        ));
+        assert_eq!(state.recent[0].path, "/new/book.epub");
+        assert!(!state.annotations.contains_key("/old/book.epub"));
+        assert_eq!(state.annotations["/new/book.epub"].len(), 1);
+        assert_eq!(state.bookmarks["/new/book.epub"], vec![1, 3]);
+        assert!(!relink_recent_book(
+            &mut state,
+            "/missing.epub",
+            "/x.epub".into()
+        ));
+        assert_eq!(state.sidebar_width, 260.0);
+        assert!(!state.sidebar_open);
     }
 }

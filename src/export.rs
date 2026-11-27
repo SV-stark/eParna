@@ -21,8 +21,8 @@ pub fn sanitize_filename(title: &str) -> String {
     }
 }
 
-/// Export `book` to the format implied by `path`'s extension using `ebook-rs` 0.19.3
-/// multi-format codecs, or RAG chunks JSON for `.json`.
+/// Export `book` to the format implied by `path`'s extension using `ebook-rs` 0.20.0
+/// multi-format codecs, WebPub manifest (`.webpub.json`), or RAG chunks JSON for `.json`.
 pub fn export_book_bytes(
     book: &ebook_rs::Book,
     path: &Path,
@@ -35,6 +35,12 @@ pub fn export_book_bytes(
     if lower_name.ends_with(".kepub.epub") {
         return book.export_format_bytes("kepub");
     }
+    if lower_name.ends_with(".webpub.json") {
+        return book
+            .to_webpub_json()
+            .map(|s| s.into_bytes())
+            .map_err(|e| ebook_rs::EbookError::Io(format!("Failed to export WebPub JSON: {e}")));
+    }
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
@@ -46,6 +52,64 @@ pub fn export_book_bytes(
             .map_err(|e| ebook_rs::EbookError::Io(format!("Failed to serialize RAG JSON: {e}")));
     }
     book.export_format_bytes(&ext)
+}
+
+/// Check whether an export format identifier or compound extension is supported.
+pub fn is_supported_output_format(ext: &str) -> bool {
+    ext.eq_ignore_ascii_case("kepub.epub")
+        || ext.eq_ignore_ascii_case("json")
+        || ext.eq_ignore_ascii_case("webpub.json")
+        || ebook_rs::Book::supported_output_formats()
+            .iter()
+            .any(|f| f.eq_ignore_ascii_case(ext))
+}
+
+/// Export highlights, notes, and bookmarks as W3C Web Annotation JSON-LD.
+pub fn format_annotations_w3c_json(
+    book: &ebook_rs::Book,
+    annotations: &[Annotation],
+    bookmarks: &[usize],
+) -> Result<String, String> {
+    let mut mgr = ebook_rs::AnnotationManager::new();
+    let cfi_for = |section: usize| -> String {
+        book.to_readium_locator(section, 0)
+            .ok()
+            .and_then(|l| l.locations.cfi)
+            .unwrap_or_else(|| format!("epubcfi(/6/{}!/4/2/1:0)", (section + 1) * 2))
+    };
+    for a in annotations {
+        let hex = match a.color.as_str() {
+            "green" => "#a5d6a7",
+            "blue" => "#90caf9",
+            "pink" => "#f48fb1",
+            "purple" => "#ce93d8",
+            _ => "#fff59d",
+        };
+        let cfi = cfi_for(a.section);
+        let selected = (!a.quote.trim().is_empty()).then_some(a.quote.as_str());
+        let note = (!a.note.trim().is_empty()).then_some(a.note.as_str());
+        mgr.create_highlight(&cfi, hex, selected, note);
+    }
+    for &sec in bookmarks {
+        let cfi = cfi_for(sec);
+        mgr.create_bookmark(&cfi, Some(&format!("Section {}", sec + 1)));
+    }
+    let source_iri = book
+        .metadata()
+        .identifier
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string)
+        .or_else(|| {
+            let hash = book.fingerprint().content_hash;
+            (!hash.is_empty()).then(|| format!("urn:book:{hash}"))
+        });
+    if let Some(src) = source_iri {
+        mgr.to_w3c_json_with_source(&src)
+    } else {
+        mgr.to_w3c_json()
+    }
 }
 
 /// Run the lossless EPUB 3 optimizer on a clone of `book` and return the
@@ -169,6 +233,22 @@ pub fn format_book_info(
             "Readium locations: {}\n",
             book.locations().total_locations
         ));
+    }
+    let total_mins = book.book_reading_time_minutes(None);
+    if total_mins > 0.0 {
+        let rounded = total_mins.round() as u32;
+        if rounded >= 60 {
+            out.push_str(&format!(
+                "Estimated reading time: ~{}h {}m\n",
+                rounded / 60,
+                rounded % 60
+            ));
+        } else {
+            out.push_str(&format!(
+                "Estimated reading time: ~{} min\n",
+                rounded.max(1)
+            ));
+        }
     }
 
     if let Ok(sec) = book.get_section(current_section) {
@@ -378,7 +458,43 @@ mod tests {
 
         let info = format_book_info(&book, 0, false, None);
         assert!(info.contains("Readium locations:"));
+        assert!(info.contains("Estimated reading time:"));
         assert!(info.contains("Section analytics:"));
         assert!(info.contains("Content hash:"));
+    }
+
+    #[test]
+    fn test_w3c_annotations_webpub_and_supported_formats() {
+        let epub = ebook_rs::sample_builder::generate_sample_epub().expect("sample epub");
+        let book = ebook_rs::Book::from_bytes(&epub).expect("parse sample epub");
+
+        for fmt in ebook_rs::Book::supported_output_formats() {
+            assert!(
+                is_supported_output_format(fmt),
+                "expected supported_output_formats entry '{fmt}' to be recognized"
+            );
+        }
+        assert!(is_supported_output_format("webpub.json"));
+        assert!(!is_supported_output_format("unknownfmt"));
+
+        let webpub =
+            export_book_bytes(&book, Path::new("book.webpub.json")).expect("export .webpub.json");
+        let webpub_str = std::str::from_utf8(&webpub).expect("utf-8 webpub");
+        assert!(webpub_str.contains("readingOrder") || webpub_str.contains("metadata"));
+
+        let items = vec![Annotation {
+            section: 0,
+            note: "Important".into(),
+            quote: "Sample quote".into(),
+            kind: "highlight".into(),
+            created: "1700000000".into(),
+            color: "blue".into(),
+        }];
+        let json = format_annotations_w3c_json(&book, &items, &[0]).expect("w3c json");
+        assert!(json.contains("http://www.w3.org/ns/anno.jsonld"));
+        assert!(json.contains("SpecificResource"));
+        assert!(json.contains("\"source\""));
+        assert!(json.contains("highlighting"));
+        assert!(json.contains("bookmarking"));
     }
 }

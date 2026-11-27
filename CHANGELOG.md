@@ -6,6 +6,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-11-27
+
+### Added
+- **Floating Selection Action Bar & Command Palette (`Ctrl+K`)**:
+  - Selecting text now displays a floating bottom-center action bar with 5 highlight color dots, **Copy**, **Define** (Dictionary lookup), and **Speak** (TTS).
+  - Added a searchable **Command Palette** (`Ctrl+K`) for jumping to Landmarks, Chapters, Themes, and Reader Actions.
+- **Paged Stepping, Exact Scroll Persistence, Drag-and-Drop & Missing-File Recovery**:
+  - Added `page_down` / `page_up` viewport stepping (`Space` / `PageDown` / `Shift+Space` / `PageUp`) before advancing sections.
+  - Persisted exact mid-chapter `scroll_fraction`, `sidebar_open`, and `sidebar_width` across restarts and scrubber seeks.
+  - Added drag-and-drop file/OEB-folder opening onto both the Library and Reader views.
+  - Library tiles now detect missing files on disk and provide a **Locate…** button (`relink_recent_book`) that updates the path while preserving annotations and bookmarks.
+- **EPUB 3 Landmarks, Syntax Highlighting & Semantic HTML**:
+  - Surfaced `book.landmarks()` in the Contents sidebar (`LandmarkItem`).
+  - Added `SyntaxHighlightEngine::parse_code` highlighting for `<pre><code>` blocks and semantic styling for `<figure>`, `<figcaption>`, `<dl>`, `<dt>`, `<dd>`, `<details>`, and `<summary>`.
+- **W3C Web Annotations, WebPub Manifest & Readium Search JSON**:
+  - Added W3C Web Annotation JSON-LD export with `SpecificResource` `source` IRI (`AnnotationManager::to_w3c_json_with_source`), Readium WebPub Manifest (`.webpub.json`) export, and Readium Search JSON (`Book::to_readium_search_json`) export from the Search sidebar.
+
+### Changed & Improved
+- **Upgraded `ebook-rs` to `v0.20.0`** (from `v0.19.3`):
+  - Removed deprecated `zstd` C dependency; wired `Book::from_mmap` for files `> 16 MiB`, `Book::book_progress`, `Book::position_from_progression`, `Book::book_reading_time_minutes`, `Book::get_tts_tokens`, and `Book::supported_output_formats`.
+- **Async Background I/O & Zero Per-Frame Overhead**:
+  - Moved book opening, cover backfilling, multi-format exports, and EPUB 3 optimization onto `cx.background_executor()` with a non-blocking status pill.
+  - Cached footnotes (`cached_footnotes`), `chapter_ticks`, and two-page spread DOM (`cached_dom2`) outside `render()`, and skipped unused fallback HTML generation when `EbookDomTree` succeeds.
+
+### Fixed
+- **Custom GPUI Renderer Text Selection**:
+  - Gave each `EbookTextBlock` its own retained `TextSelectionHandle` + `refresh_window_on_change` via `window.with_element_state` so cross-paragraph drag selection, double/triple-click, and `Ctrl+C` copy work reliably.
+  - Scoped element IDs by `section_idx`, added `IBeam` / `PointingHand` cursors, moved link-click tracking into retained element state, aligned multi-line selection quads to `layout.bounds()`, and made `find_ci_ranges` Unicode case-folding safe.
+
 ## [0.9.2] - 2026-11-24
 
 ### Added

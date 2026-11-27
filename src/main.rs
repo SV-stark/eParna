@@ -27,8 +27,9 @@ use std::path::PathBuf;
 
 use crate::config::{load_state, save_state};
 use crate::export::{
-    export_book_bytes, format_annotations_markdown, format_book_info, format_citations,
-    format_validation, optimize_book_epub3, sanitize_filename,
+    export_book_bytes, format_annotations_markdown, format_annotations_w3c_json, format_book_info,
+    format_citations, format_validation, is_supported_output_format, optimize_book_epub3,
+    sanitize_filename,
 };
 use crate::html_utils::*;
 use crate::library::*;
@@ -66,6 +67,7 @@ struct ReaderView {
     html: String,
 
     toc_items: Vec<TocItem>,
+    landmarks: Vec<LandmarkItem>,
     toc_state: Option<Entity<SelectState<Vec<String>>>>,
     active_toc_index: Option<usize>,
 
@@ -149,6 +151,12 @@ struct ReaderView {
     // Per-section / per-column cached render state
     cached_word_count: usize,
     cached_progress: f32,
+    cached_book_progress: Option<ebook_rs::BookProgress>,
+    cached_footnotes: Vec<ebook_rs::footnote::Footnote>,
+    pending_scroll_fraction: Option<f32>,
+    busy_message: Option<String>,
+    command_palette_open: bool,
+    command_palette_input: Entity<InputState>,
     section_start_pct: f32,
     section_end_pct: f32,
     chapter_ticks: Vec<f32>,
@@ -157,8 +165,6 @@ struct ReaderView {
     cached_column_px: f32,
     cached_dom: Option<ebook_rs::EbookDomTree>,
     cached_dom2: Option<(usize, ebook_rs::EbookDomTree)>,
-    page1_selection: Option<gpui_kit::base::TextSelectionHandle>,
-    page2_selection: Option<gpui_kit::base::TextSelectionHandle>,
     image_cache: ImageCache,
 
     // Resizable & collapsible sidebar, export format picker, synced gpui-kit theme mode
@@ -174,33 +180,62 @@ struct ReaderView {
 }
 
 impl ReaderView {
-    fn cache_cover(&self, book: &ebook_rs::Book, path: &str) -> String {
-        cache_cover_to_disk(book, path)
-    }
-
-    fn load_covers(&mut self) {
+    fn load_covers(&mut self, cx: &mut Context<Self>) {
         if !self.covers_backfilled {
             self.covers_backfilled = true;
-            let mut updated = false;
-            for r in &mut self.state.recent {
-                if !r.cover.is_empty() {
-                    continue;
-                }
-                let book_path = PathBuf::from(&r.path);
-                if book_path.exists()
-                    && let Ok(book) = ebook_rs::Book::from_file(&book_path)
-                {
-                    let c = cache_cover_to_disk(&book, &r.path);
-                    if !c.is_empty() {
-                        r.cover = c;
-                        updated = true;
+            let candidates: Vec<PathBuf> = self
+                .state
+                .recent
+                .iter()
+                .filter(|r| r.cover.is_empty())
+                .map(|r| PathBuf::from(&r.path))
+                .filter(|p| p.exists())
+                .collect();
+            if !candidates.is_empty() {
+                let bg = cx.background_executor().clone();
+                cx.spawn(async move |view, cx| {
+                    let discovered: Vec<(String, String)> = bg
+                        .spawn(async move {
+                            let mut out = Vec::new();
+                            for book_path in candidates {
+                                if let Ok(book) = open_book_path(&book_path) {
+                                    let key = book_path.to_string_lossy().to_string();
+                                    let c = cache_cover_to_disk(&book, &key);
+                                    if !c.is_empty() {
+                                        out.push((key, c));
+                                    }
+                                }
+                            }
+                            out
+                        })
+                        .await;
+                    if !discovered.is_empty() {
+                        let _ = view.update(cx, |view, cx| {
+                            let mut updated = false;
+                            for (key, c) in discovered {
+                                if let Some(r) =
+                                    view.state.recent.iter_mut().find(|r| r.path == key)
+                                    && r.cover.is_empty()
+                                {
+                                    r.cover = c;
+                                    updated = true;
+                                }
+                            }
+                            if updated {
+                                view.save_state();
+                                view.load_covers_from_disk();
+                                cx.notify();
+                            }
+                        });
                     }
-                }
-            }
-            if updated {
-                self.save_state();
+                })
+                .detach();
             }
         }
+        self.load_covers_from_disk();
+    }
+
+    fn load_covers_from_disk(&mut self) {
         for r in &self.state.recent {
             if r.cover.is_empty() || self.covers.contains_key(&r.cover) {
                 continue;
@@ -232,6 +267,16 @@ impl ReaderView {
         save_state(&self.state);
     }
 
+    fn current_scroll_fraction(&self) -> f32 {
+        let max_y: f32 = self.scroll_handle.max_offset().y.into();
+        if max_y > 1.0 {
+            let cur_y: f32 = (-self.scroll_handle.offset().y).into();
+            (cur_y / max_y).clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
+    }
+
     fn sync_state(&mut self) {
         let elapsed = self.reading_start.elapsed().as_secs();
         if elapsed > 0 {
@@ -243,6 +288,14 @@ impl ReaderView {
                 }
             }
             self.reading_start = std::time::Instant::now();
+        }
+        if let Some(path) = &self.book_path {
+            let key = path.to_string_lossy().to_string();
+            let scroll_frac = self.current_scroll_fraction();
+            if let Some(r) = self.state.recent.iter_mut().find(|r| r.path == key) {
+                r.section = self.current;
+                r.scroll_fraction = scroll_frac;
+            }
         }
         self.state.font_size = self.font_size;
         self.state.line_height = self.line_height;
@@ -256,6 +309,8 @@ impl ReaderView {
         self.state.dark = self.dark;
         self.state.custom_bg = self.custom_bg.clone();
         self.state.custom_fg = self.custom_fg.clone();
+        self.state.sidebar_open = self.sidebar_open;
+        self.state.sidebar_width = self.sidebar_width;
         self.save_state();
     }
 
@@ -280,7 +335,13 @@ impl ReaderView {
         let custom_fg_input = cx.new(|cx| InputState::new(window, cx).placeholder("#202020"));
         let find_in_page_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Find in current chapter..."));
+        let command_palette_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Jump to chapter, landmark, theme, or action...")
+        });
 
+        let sidebar_open = st.sidebar_open;
+        let sidebar_width = st.sidebar_width.clamp(180.0, 480.0);
         let mut view = Self {
             font_size: st.font_size,
             line_height: st.line_height,
@@ -303,6 +364,7 @@ impl ReaderView {
             current: 0,
             html: String::new(),
             toc_items: Vec::new(),
+            landmarks: Vec::new(),
             toc_state: None,
             active_toc_index: None,
             sidebar_mode: SidebarMode::Contents,
@@ -347,6 +409,12 @@ impl ReaderView {
             nav_history: Vec::new(),
             cached_word_count: 0,
             cached_progress: 0.0,
+            cached_book_progress: None,
+            cached_footnotes: Vec::new(),
+            pending_scroll_fraction: None,
+            busy_message: None,
+            command_palette_open: false,
+            command_palette_input,
             section_start_pct: 0.0,
             section_end_pct: 100.0,
             chapter_ticks: Vec::new(),
@@ -355,11 +423,9 @@ impl ReaderView {
             cached_column_px: 0.0,
             cached_dom: None,
             cached_dom2: None,
-            page1_selection: Some(gpui_kit::base::TextSelectionHandle::new("", cx)),
-            page2_selection: Some(gpui_kit::base::TextSelectionHandle::new("", cx)),
             image_cache: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
-            sidebar_open: false,
-            sidebar_width: 260.0,
+            sidebar_open,
+            sidebar_width,
             export_modal: false,
             synced_dark_mode: None,
             focus_handle: cx.focus_handle(),
@@ -372,7 +438,7 @@ impl ReaderView {
         view.focus_handle.focus(window, cx);
 
         if view.show_library {
-            view.load_covers();
+            view.load_covers(cx);
         }
         if let Some(arg) = std::env::args().nth(1) {
             view.open_file(PathBuf::from(arg), window, cx);
@@ -407,7 +473,7 @@ impl ReaderView {
                 let added = merge_scanned_books(&mut view.state.recent, scanned);
                 if added > 0 {
                     view.save_state();
-                    view.load_covers();
+                    view.load_covers(cx);
                     notify_simple(
                         window,
                         cx,
@@ -439,187 +505,264 @@ impl ReaderView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let book_result: Result<ebook_rs::Book, ebook_rs::EbookError> =
-            if let Some(pp) = &passphrase {
-                std::fs::read(&path)
-                    .map_err(ebook_rs::EbookError::from)
-                    .and_then(|bytes| {
-                        let title = path.file_stem().and_then(|s| s.to_str()).unwrap_or("eBook");
-                        ebook_rs::Book::from_bytes_with_passphrase(&bytes, title, pp)
-                    })
-            } else {
-                ebook_rs::Book::from_file(&path)
-            };
-        match book_result {
-            Ok(mut book) => {
-                // Deliver merged book CSS and inline matching <style> rules onto elements
-                // so stripping <head> in `prepare_section_html` preserves publisher styling.
-                book.layout_mut().asset_delivery = ebook_rs::AssetDeliveryStrategy::InlinedStyle;
-                self.focus_handle.focus(window, cx);
-                if book.locations().total_locations == 0 {
-                    book.generate_locations(1000);
-                }
-                let title = book.metadata().title.clone();
-                window.set_window_title(&format!("{} — eParna", title));
-
-                // Detect Manga / Comic Right-to-Left (RTL) reading flow
-                self.rtl_mode =
-                    book.metadata().direction == ebook_rs::PageProgressionDirection::Rtl;
-
-                let author = book.metadata().creator().to_string();
-                let format = detect_format_label(&path);
-                let total = book.sections().len();
-                let key = path.to_string_lossy().to_string();
-                let saved = self
-                    .state
-                    .recent
-                    .iter()
-                    .find(|r| r.path == key)
-                    .map(|r| (r.section, r.cfi.clone()));
-                let cover = self.cache_cover(&book, &key);
-                let file_size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-                let content_hash = if file_size <= 32 * 1024 * 1024 {
-                    book.fingerprint().content_hash
-                } else {
-                    String::new()
-                };
-
-                let items = build_toc_items(&book);
-                let labels: Vec<String> = items.iter().map(TocItem::select_label).collect();
-                let toc_state = cx.new(|cx| SelectState::new(labels, None, window, cx));
-                let toc_sub =
-                    cx.subscribe(&toc_state, |view, _state, event: &SelectEvent<_>, cx| {
-                        if let SelectEvent::Confirm(Some(label)) = event
-                            && let Some((toc_idx, item)) = view
-                                .toc_items
-                                .iter()
-                                .enumerate()
-                                .find(|(_, item)| item.select_label() == *label)
-                        {
-                            let section_idx = item.section_index;
-                            view.jump(section_idx, cx);
-                            view.active_toc_index = Some(toc_idx);
-                            cx.notify();
-                        }
-                    });
-                toc_sub.detach();
-
-                self.annotations = self
-                    .state
-                    .annotations
-                    .get(&key)
-                    .cloned()
-                    .unwrap_or_default();
-                self.bookmarks = self.state.bookmarks.get(&key).cloned().unwrap_or_default();
-                self.nav_history.clear();
-                self.refresh_bookmark_state(window, cx);
-
-                let now = format!(
-                    "{}",
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs()
-                );
-                let was_fav = self
-                    .state
-                    .recent
-                    .iter()
-                    .find(|r| r.path == key)
-                    .map(|r| r.favorite)
-                    .unwrap_or(false);
-                let prev_reading_time = self
-                    .state
-                    .recent
-                    .iter()
-                    .find(|r| r.path == key)
-                    .map(|r| r.reading_time_secs)
-                    .unwrap_or(0);
-
-                let mut merged = false;
-                if !content_hash.is_empty()
-                    && let Some(pos) = self.state.recent.iter().position(|r| {
-                        !r.content_hash.is_empty()
-                            && r.content_hash == content_hash
-                            && r.path != key
-                    })
-                {
-                    let mut entry = self.state.recent.remove(pos);
-                    entry.path = key.clone();
-                    entry.title = title.clone();
-                    entry.section = 0;
-                    entry.opened = now.clone();
-                    entry.cover = cover.clone();
-                    entry.content_hash = content_hash.clone();
-                    entry.author = author.clone();
-                    entry.format = format.clone();
-                    entry.total = total;
-                    self.state.recent.insert(0, entry);
-                    merged = true;
-                }
-                if !merged {
-                    self.state.recent.retain(|r| r.path != key);
-                    self.state.recent.insert(
-                        0,
-                        RecentBook {
-                            path: key.clone(),
-                            title: title.clone(),
-                            section: 0,
-                            opened: now,
-                            favorite: was_fav,
-                            status: "reading".into(),
-                            content_hash,
-                            cfi: String::new(),
-                            author: author.clone(),
-                            format: format.clone(),
-                            total,
-                            cover,
-                            reading_time_secs: prev_reading_time,
-                        },
-                    );
-                }
-                if self.state.recent.len() > 100 {
-                    self.state.recent.truncate(100);
-                }
-                self.save_state();
-
-                self.toc_items = items;
-                self.toc_state = Some(toc_state);
-                self.active_toc_index = None;
-                self.book = Some(book);
-                self.book_path = Some(path);
-                self.reading_start = std::time::Instant::now();
-                self.search_results.clear();
-                self.show_library = false;
-
-                let len = self.book.as_ref().map(|b| b.sections().len()).unwrap_or(0);
-                let idx = saved
-                    .as_ref()
-                    .and_then(|(_, c)| self.section_from_cfi(c))
-                    .or_else(|| saved.as_ref().map(|(i, _)| *i))
-                    .unwrap_or(0);
-                self.current = idx.min(len.saturating_sub(1));
-                self.load_current(cx);
-            }
-            Err(e) => {
-                let msg = e.to_string();
-                match e {
-                    ebook_rs::EbookError::DrmProtected(_) if passphrase.is_none() => {
-                        self.passphrase_pending = Some(path.clone());
-                        self.passphrase_error = msg;
-                        self.passphrase_modal = true;
-                    }
-                    _ if passphrase.is_some() => {
-                        self.passphrase_error = msg;
-                        self.passphrase_modal = true;
-                    }
-                    _ => {
-                        notify_simple(window, cx, "Open failed", msg);
-                    }
-                }
-            }
-        }
+        let label = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("eBook")
+            .to_string();
+        self.busy_message = Some(format!("Opening {label}…"));
         cx.notify();
+
+        let bg = cx.background_executor().clone();
+        let path_bg = path.clone();
+        let passphrase_bg = passphrase.clone();
+        cx.spawn_in(window, async move |view, cx| {
+            let parsed = bg
+                .spawn(async move {
+                    let book_result: Result<ebook_rs::Book, ebook_rs::EbookError> =
+                        if let Some(pp) = &passphrase_bg {
+                            std::fs::read(&path_bg)
+                                .map_err(ebook_rs::EbookError::from)
+                                .and_then(|bytes| {
+                                    let title = path_bg
+                                        .file_stem()
+                                        .and_then(|s| s.to_str())
+                                        .unwrap_or("eBook");
+                                    ebook_rs::Book::from_bytes_with_passphrase(&bytes, title, pp)
+                                })
+                        } else {
+                            open_book_path(&path_bg)
+                        };
+                    let mut book = book_result?;
+                    book.layout_mut().asset_delivery =
+                        ebook_rs::AssetDeliveryStrategy::InlinedStyle;
+                    if book.locations().total_locations == 0 {
+                        book.generate_locations(1000);
+                    }
+                    let key = path_bg.to_string_lossy().to_string();
+                    let cover = cache_cover_to_disk(&book, &key);
+                    let file_size = std::fs::metadata(&path_bg).map(|m| m.len()).unwrap_or(0);
+                    let content_hash = if file_size <= 32 * 1024 * 1024 {
+                        book.fingerprint().content_hash
+                    } else {
+                        String::new()
+                    };
+                    let items = build_toc_items(&book);
+                    let landmarks = build_landmark_items(&book);
+                    let total = book.sections().len();
+                    let step = (total / 40).max(1);
+                    let chapter_ticks: Vec<f32> = (1..total)
+                        .step_by(step)
+                        .map(|idx| {
+                            let pct = book
+                                .to_readium_locator(idx, 0)
+                                .ok()
+                                .map(|l| (l.locations.total_progression * 100.0) as f32)
+                                .unwrap_or_else(|| (idx as f32 / total.max(1) as f32) * 100.0);
+                            (pct / 100.0).clamp(0.0, 1.0)
+                        })
+                        .collect();
+                    Ok::<_, ebook_rs::EbookError>((
+                        book,
+                        cover,
+                        content_hash,
+                        items,
+                        landmarks,
+                        chapter_ticks,
+                    ))
+                })
+                .await;
+
+            let _ = view.update_in(cx, |view, window, cx| {
+                view.busy_message = None;
+                match parsed {
+                    Ok((book, cover, content_hash, items, landmarks, chapter_ticks)) => {
+                        view.finish_open_book(
+                            path,
+                            book,
+                            cover,
+                            content_hash,
+                            items,
+                            landmarks,
+                            chapter_ticks,
+                            window,
+                            cx,
+                        );
+                    }
+                    Err(e) => {
+                        let msg = e.to_string();
+                        match e {
+                            ebook_rs::EbookError::DrmProtected(_) if passphrase.is_none() => {
+                                view.passphrase_pending = Some(path.clone());
+                                view.passphrase_error = msg;
+                                view.passphrase_modal = true;
+                            }
+                            _ if passphrase.is_some() => {
+                                view.passphrase_error = msg;
+                                view.passphrase_modal = true;
+                            }
+                            _ => {
+                                notify_simple(window, cx, "Open failed", msg);
+                            }
+                        }
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn finish_open_book(
+        &mut self,
+        path: PathBuf,
+        book: ebook_rs::Book,
+        cover: String,
+        content_hash: String,
+        items: Vec<TocItem>,
+        landmarks: Vec<LandmarkItem>,
+        chapter_ticks: Vec<f32>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.focus_handle.focus(window, cx);
+        let title = book.metadata().title.clone();
+        window.set_window_title(&format!("{} — eParna", title));
+
+        // Detect Manga / Comic Right-to-Left (RTL) reading flow
+        self.rtl_mode = book.metadata().direction == ebook_rs::PageProgressionDirection::Rtl;
+
+        let author = book.metadata().creator().to_string();
+        let format = detect_format_label(&path);
+        let total = book.sections().len();
+        let key = path.to_string_lossy().to_string();
+        let saved = self
+            .state
+            .recent
+            .iter()
+            .find(|r| r.path == key)
+            .map(|r| (r.section, r.cfi.clone(), r.scroll_fraction));
+
+        let labels: Vec<String> = items.iter().map(TocItem::select_label).collect();
+        let toc_state = cx.new(|cx| SelectState::new(labels, None, window, cx));
+        let toc_sub = cx.subscribe(&toc_state, |view, _state, event: &SelectEvent<_>, cx| {
+            if let SelectEvent::Confirm(Some(label)) = event
+                && let Some((toc_idx, item)) = view
+                    .toc_items
+                    .iter()
+                    .enumerate()
+                    .find(|(_, item)| item.select_label() == *label)
+            {
+                let section_idx = item.section_index;
+                view.jump(section_idx, cx);
+                view.active_toc_index = Some(toc_idx);
+                cx.notify();
+            }
+        });
+        toc_sub.detach();
+
+        self.annotations = self
+            .state
+            .annotations
+            .get(&key)
+            .cloned()
+            .unwrap_or_default();
+        self.bookmarks = self.state.bookmarks.get(&key).cloned().unwrap_or_default();
+        self.nav_history.clear();
+        self.refresh_bookmark_state(window, cx);
+
+        let now = format!(
+            "{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+        );
+        let was_fav = self
+            .state
+            .recent
+            .iter()
+            .find(|r| r.path == key)
+            .map(|r| r.favorite)
+            .unwrap_or(false);
+        let prev_reading_time = self
+            .state
+            .recent
+            .iter()
+            .find(|r| r.path == key)
+            .map(|r| r.reading_time_secs)
+            .unwrap_or(0);
+        let prev_scroll = saved.as_ref().map(|s| s.2).unwrap_or(0.0);
+
+        let mut merged = false;
+        if !content_hash.is_empty()
+            && let Some(pos) = self.state.recent.iter().position(|r| {
+                !r.content_hash.is_empty() && r.content_hash == content_hash && r.path != key
+            })
+        {
+            let mut entry = self.state.recent.remove(pos);
+            entry.path = key.clone();
+            entry.title = title.clone();
+            entry.section = 0;
+            entry.opened = now.clone();
+            entry.cover = cover.clone();
+            entry.content_hash = content_hash.clone();
+            entry.author = author.clone();
+            entry.format = format.clone();
+            entry.total = total;
+            self.state.recent.insert(0, entry);
+            merged = true;
+        }
+        if !merged {
+            self.state.recent.retain(|r| r.path != key);
+            self.state.recent.insert(
+                0,
+                RecentBook {
+                    path: key.clone(),
+                    title: title.clone(),
+                    section: 0,
+                    opened: now,
+                    favorite: was_fav,
+                    status: "reading".into(),
+                    content_hash,
+                    cfi: String::new(),
+                    author: author.clone(),
+                    format: format.clone(),
+                    total,
+                    cover,
+                    reading_time_secs: prev_reading_time,
+                    scroll_fraction: prev_scroll,
+                },
+            );
+        }
+        if self.state.recent.len() > 100 {
+            self.state.recent.truncate(100);
+        }
+        self.save_state();
+
+        self.toc_items = items;
+        self.landmarks = landmarks;
+        self.chapter_ticks = chapter_ticks;
+        self.toc_state = Some(toc_state);
+        self.active_toc_index = None;
+        self.book = Some(book);
+        self.book_path = Some(path);
+        self.reading_start = std::time::Instant::now();
+        self.search_results.clear();
+        self.show_library = false;
+
+        let len = self.book.as_ref().map(|b| b.sections().len()).unwrap_or(0);
+        let idx = saved
+            .as_ref()
+            .and_then(|(_, c, _)| self.section_from_cfi(c))
+            .or_else(|| saved.as_ref().map(|(i, _, _)| *i))
+            .unwrap_or(0);
+        self.current = idx.min(len.saturating_sub(1));
+        self.load_current(cx);
+        if prev_scroll > 0.01 {
+            self.pending_scroll_fraction = Some(prev_scroll.clamp(0.0, 1.0));
+        }
     }
 
     fn jump_to_percentage(&mut self, pct: f32, cx: &mut Context<Self>) {
@@ -635,73 +778,63 @@ impl ReaderView {
                 return;
             }
         }
-        let target_idx = if let Some(book) = &self.book {
+        let target = if let Some(book) = &self.book {
             let total = book.sections().len();
             if total == 0 {
                 return;
             }
-            let by_cfi = if book.locations().total_locations > 0 {
-                let target_loc =
-                    ((clamped / 100.0) * book.locations().total_locations as f32).round() as usize;
-                book.locations()
-                    .cfi_from_location(target_loc)
-                    .and_then(|cfi| book.get_section_and_offset_by_cfi(&cfi).ok())
-                    .map(|(sec, _)| sec.index)
-            } else {
-                None
-            };
-            by_cfi
-                .unwrap_or_else(|| {
-                    (((clamped / 100.0) * total as f32).floor() as usize).min(total - 1)
+            book.position_from_progression((clamped / 100.0) as f64)
+                .map(|(idx, offset)| {
+                    let frac = book
+                        .get_section(idx)
+                        .ok()
+                        .map(|s| (offset as f32 / s.char_count.max(1) as f32).clamp(0.0, 1.0))
+                        .unwrap_or(0.0);
+                    (idx.min(total - 1), frac)
                 })
-                .min(total - 1)
+                .unwrap_or_else(|_| {
+                    let idx = (((clamped / 100.0) * total as f32).floor() as usize).min(total - 1);
+                    (idx, 0.0)
+                })
         } else {
             return;
         };
+        let (target_idx, target_frac) = target;
         self.jump(target_idx, cx);
+        if target_frac > 0.01 {
+            self.pending_scroll_fraction = Some(target_frac);
+        }
     }
 
-    fn load_current(&mut self, cx: &mut Context<Self>) {
+    fn load_current(&mut self, _cx: &mut Context<Self>) {
         self.stop_tts();
         self.tts_text.clear();
         self.cached_word_count = 0;
         self.cached_progress = 0.0;
+        self.cached_book_progress = None;
+        self.cached_footnotes.clear();
+        self.pending_scroll_fraction = None;
         self.section_start_pct = 0.0;
         self.section_end_pct = 100.0;
-        self.chapter_ticks.clear();
         self.scroll_handle.set_offset(point(px(0.0), px(0.0)));
         self.cached_dom = None;
         self.cached_dom2 = None;
-        self.page1_selection = Some(gpui_kit::base::TextSelectionHandle::new("", cx));
-        self.page2_selection = Some(gpui_kit::base::TextSelectionHandle::new("", cx));
+        self.html.clear();
+        self.cached_constrained_html.clear();
         let column_px = (self.max_width - 2.0 * self.margin).max(160.0);
         if let Some(book) = &self.book {
             match book.get_section(self.current) {
                 Ok(sec) => {
-                    self.cached_word_count = sec.plain_text.split_whitespace().count();
+                    self.cached_word_count = book
+                        .get_tts_tokens(self.current)
+                        .ok()
+                        .filter(|t| !t.is_empty())
+                        .map(|t| t.len())
+                        .unwrap_or_else(|| sec.plain_text.split_whitespace().count());
                     self.tts_text = sec.plain_text.clone();
+                    self.cached_footnotes = sec.extract_footnotes();
                     let inlined_svg = inline_svg_images(&sec.processed_html, book, &sec.full_path);
                     self.cached_dom = Some(ebook_rs::EbookDomTree::parse(&inlined_svg));
-                    let current_annotations: Vec<Annotation> = self
-                        .annotations
-                        .iter()
-                        .filter(|a| a.section == self.current)
-                        .cloned()
-                        .collect();
-                    let active_search = if self.active_search_query.trim().is_empty() {
-                        None
-                    } else {
-                        Some(self.active_search_query.as_str())
-                    };
-                    self.html = prepare_section_html(
-                        &sec.processed_html,
-                        book,
-                        &sec.full_path,
-                        &current_annotations,
-                        active_search,
-                        &self.theme,
-                        self.justify,
-                    );
                 }
                 Err(e) => {
                     let err_html = format!("<p>Error: {}</p>", e);
@@ -718,46 +851,47 @@ impl ReaderView {
             }
             if !book.sections().is_empty() {
                 let total = book.sections().len();
-                let has_locs = book.locations().total_locations > 0;
+                let bp = book
+                    .book_progress(self.current, 0, Some(self.state.wpm))
+                    .ok();
+                self.cached_book_progress = bp.clone();
                 let pct_for_sec = |idx: usize| -> f32 {
                     if idx >= total {
                         return 100.0;
                     }
-                    if has_locs
-                        && let Ok(loc) = book.to_readium_locator(idx, 0)
-                        && let Some(cfi) = loc.locations.cfi
-                    {
-                        return (book.locations().percentage_from_cfi(&cfi) * 100.0) as f32;
+                    if let Ok(loc) = book.to_readium_locator(idx, 0) {
+                        return (loc.locations.total_progression * 100.0) as f32;
                     }
                     (idx as f32 / total as f32) * 100.0
                 };
-                self.section_start_pct = pct_for_sec(self.current);
+                self.section_start_pct = bp
+                    .as_ref()
+                    .map(|p| (p.book_progression * 100.0) as f32)
+                    .unwrap_or_else(|| pct_for_sec(self.current));
                 self.section_end_pct = pct_for_sec(self.current + 1).max(self.section_start_pct);
-                self.cached_progress = if has_locs {
-                    self.section_start_pct
-                } else {
-                    (self.current as f32 + 1.0) / total as f32 * 100.0
-                };
-
-                // Build chapter boundary ticks (capped to keep dense books clean)
-                let step = (total / 40).max(1);
-                self.chapter_ticks = (1..total)
-                    .step_by(step)
-                    .map(|idx| (pct_for_sec(idx) / 100.0).clamp(0.0, 1.0))
-                    .collect();
+                self.cached_progress = self.section_start_pct;
             }
         }
         self.cached_column_px = column_px;
-        self.cached_constrained_html = constrain_images(&self.html, column_px);
+        if self.cached_dom.is_none() {
+            self.cached_constrained_html = constrain_images(&self.html, column_px);
+        }
         if let Some(path) = &self.book_path {
             let key = path.to_string_lossy().to_string();
             let cfi = self
-                .book
+                .cached_book_progress
                 .as_ref()
-                .and_then(|b| b.to_readium_locator(self.current, 0).ok())
-                .and_then(|l| l.locations.cfi);
+                .map(|p| p.cfi.clone())
+                .filter(|c| !c.is_empty())
+                .or_else(|| {
+                    self.book
+                        .as_ref()
+                        .and_then(|b| b.to_readium_locator(self.current, 0).ok())
+                        .and_then(|l| l.locations.cfi)
+                });
             if let Some(r) = self.state.recent.iter_mut().find(|r| r.path == key) {
                 r.section = self.current;
+                r.scroll_fraction = 0.0;
                 if let Some(cfi) = cfi {
                     r.cfi = cfi;
                 }
@@ -790,6 +924,33 @@ impl ReaderView {
             self.next_section(cx);
         } else {
             self.prev_section(cx);
+        }
+    }
+
+    fn page_down(&mut self, cx: &mut Context<Self>) {
+        let max_y: f32 = self.scroll_handle.max_offset().y.into();
+        let cur_y: f32 = (-self.scroll_handle.offset().y).into();
+        if max_y > 1.0 && cur_y < max_y - 8.0 {
+            let vh: f32 = self.scroll_handle.bounds().size.height.into();
+            let step = (if vh > 100.0 { vh } else { 520.0 } * 0.88).max(120.0);
+            let next_y = (cur_y + step).min(max_y);
+            self.scroll_handle.set_offset(point(px(0.0), px(-next_y)));
+            cx.notify();
+        } else {
+            self.next(cx);
+        }
+    }
+
+    fn page_up(&mut self, cx: &mut Context<Self>) {
+        let cur_y: f32 = (-self.scroll_handle.offset().y).into();
+        if cur_y > 8.0 {
+            let vh: f32 = self.scroll_handle.bounds().size.height.into();
+            let step = (if vh > 100.0 { vh } else { 520.0 } * 0.88).max(120.0);
+            let prev_y = (cur_y - step).max(0.0);
+            self.scroll_handle.set_offset(point(px(0.0), px(-prev_y)));
+            cx.notify();
+        } else {
+            self.prev(cx);
         }
     }
 
@@ -1023,9 +1184,30 @@ impl ReaderView {
     fn go_library(&mut self, cx: &mut Context<Self>) {
         self.stop_tts();
         self.show_library = true;
-        self.load_covers();
+        self.load_covers(cx);
         self.sync_state();
         cx.notify();
+    }
+
+    fn handle_dropped_paths(
+        &mut self,
+        paths: &ExternalPaths,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        for p in paths.paths() {
+            if p.is_dir() {
+                if p.join("content.opf").exists() {
+                    self.open_file(p.clone(), window, cx);
+                    return;
+                }
+            } else if let Some(ext) = p.extension().and_then(|e| e.to_str())
+                && SUPPORTED_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str())
+            {
+                self.open_file(p.clone(), window, cx);
+                return;
+            }
+        }
     }
 
     fn render_library(
@@ -1451,11 +1633,51 @@ impl ReaderView {
                     let p = r.path.clone();
                     cx.listener(move |view, _ev, _w, cx| view.cycle_book_status(p.clone(), cx))
                 };
-                let status_badge = match r.status.as_str() {
-                    "finished" => "Done",
-                    "want" => "Want",
-                    _ => "Reading",
+                let is_missing = !std::path::Path::new(&r.path).exists();
+                let status_badge = if is_missing {
+                    "Missing"
+                } else {
+                    match r.status.as_str() {
+                        "finished" => "Done",
+                        "want" => "Want",
+                        _ => "Reading",
+                    }
                 };
+                let mut left_footer = h_flex().gap_1().items_center().child(
+                    Button::new(format!("{id}-st"))
+                        .ghost()
+                        .label(status_badge)
+                        .tooltip(if is_missing {
+                            "File not found on disk"
+                        } else {
+                            "Cycle reading status"
+                        })
+                        .on_click(on_status),
+                );
+                if is_missing {
+                    let old_p = r.path.clone();
+                    left_footer = left_footer.child(
+                        Button::new(format!("{id}-loc"))
+                            .ghost()
+                            .label("Locate…")
+                            .tooltip("Relink moved ebook file")
+                            .on_click(cx.listener(move |view, _ev, window, cx| {
+                                if let Some(new_path) = pick_ebook_file() {
+                                    let new_str = new_path.to_string_lossy().to_string();
+                                    if relink_recent_book(&mut view.state, &old_p, new_str) {
+                                        view.save_state();
+                                        notify_simple(
+                                            window,
+                                            cx,
+                                            "Book Relinked",
+                                            format!("{}", new_path.display()),
+                                        );
+                                        cx.notify();
+                                    }
+                                }
+                            })),
+                    );
+                }
                 grid = grid.child(grid_tile(
                     BookTileMeta {
                         id: id.clone(),
@@ -1471,13 +1693,7 @@ impl ReaderView {
                         .w_full()
                         .justify_between()
                         .items_center()
-                        .child(
-                            Button::new(format!("{id}-st"))
-                                .ghost()
-                                .label(status_badge)
-                                .tooltip("Cycle reading status")
-                                .on_click(on_status),
-                        )
+                        .child(left_footer)
                         .child(
                             h_flex()
                                 .gap_1()
@@ -1646,6 +1862,9 @@ impl ReaderView {
             .text_color(palette.fg)
             .p_4()
             .gap_4()
+            .on_drop(cx.listener(|view, paths: &ExternalPaths, window, cx| {
+                view.handle_dropped_paths(paths, window, cx);
+            }))
             .child(header)
             .child(
                 div()
@@ -1805,6 +2024,10 @@ impl ReaderView {
     fn adjust_wpm(&mut self, delta: i32, cx: &mut Context<Self>) {
         let cur = self.state.wpm as i32;
         self.state.wpm = (cur + delta).clamp(80, 800) as u32;
+        self.cached_book_progress = self
+            .book
+            .as_ref()
+            .and_then(|b| b.book_progress(self.current, 0, Some(self.state.wpm)).ok());
         self.save_state();
         cx.notify();
     }
@@ -2011,6 +2234,18 @@ Sidebars & Panels:
     }
     fn toggle_two_page(&mut self, cx: &mut Context<Self>) {
         self.two_page = !self.two_page;
+        if self.two_page {
+            if self.cached_dom2.is_none()
+                && let Some(book) = &self.book
+                && let Ok(sec2) = book.get_section(self.current + 1)
+            {
+                let inlined2 = inline_svg_images(&sec2.processed_html, book, &sec2.full_path);
+                self.cached_dom2 =
+                    Some((self.current + 1, ebook_rs::EbookDomTree::parse(&inlined2)));
+            }
+        } else {
+            self.cached_dom2 = None;
+        }
         self.sync_state();
         cx.notify();
     }
@@ -2040,7 +2275,11 @@ Sidebars & Panels:
             return;
         };
         let stem = sanitize_filename(&book.metadata().title);
-        let filter_ext = if ext == "kepub.epub" { "epub" } else { ext };
+        let filter_ext = match ext {
+            "kepub.epub" => "epub",
+            "webpub.json" => "json",
+            _ => ext,
+        };
         let chosen = rfd::FileDialog::new()
             .set_file_name(format!("{stem}.{ext}"))
             .add_filter(label, &[filter_ext])
@@ -2049,20 +2288,35 @@ Sidebars & Panels:
             return;
         };
         self.export_modal = false;
-        match export_book_bytes(book, &path) {
-            Ok(bytes) => {
-                let n = bytes.len();
-                let ok = std::fs::write(&path, &bytes).is_ok();
-                notify_simple(
-                    window,
-                    cx,
-                    if ok { "Exported Book" } else { "Write failed" },
-                    format!("{} ({n} bytes)", path.display()),
-                );
-            }
-            Err(e) => notify_simple(window, cx, "Export failed", e.to_string()),
-        }
+        let book_clone = book.clone();
+        let label_s = label.to_string();
+        self.busy_message = Some(format!("Exporting {label_s}…"));
         cx.notify();
+        let bg = cx.background_executor().clone();
+        cx.spawn_in(window, async move |view, cx| {
+            let res = bg
+                .spawn(async move {
+                    let bytes = export_book_bytes(&book_clone, &path).map_err(|e| e.to_string())?;
+                    let n = bytes.len();
+                    std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
+                    Ok::<_, String>((path, n))
+                })
+                .await;
+            let _ = view.update_in(cx, |view, window, cx| {
+                view.busy_message = None;
+                match res {
+                    Ok((path, n)) => notify_simple(
+                        window,
+                        cx,
+                        "Exported Book",
+                        format!("{} ({n} bytes)", path.display()),
+                    ),
+                    Err(e) => notify_simple(window, cx, "Export failed", e),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn export_book_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2102,19 +2356,34 @@ Sidebars & Panels:
         let Some(path) = chosen else {
             return;
         };
-        match export_book_bytes(book, &path) {
-            Ok(bytes) => {
-                let n = bytes.len();
-                let ok = std::fs::write(&path, &bytes).is_ok();
-                notify_simple(
-                    window,
-                    cx,
-                    if ok { "Exported Book" } else { "Write failed" },
-                    format!("{} ({n} bytes)", path.display()),
-                );
-            }
-            Err(e) => notify_simple(window, cx, "Export failed", e.to_string()),
-        }
+        let book_clone = book.clone();
+        self.busy_message = Some("Exporting book…".into());
+        cx.notify();
+        let bg = cx.background_executor().clone();
+        cx.spawn_in(window, async move |view, cx| {
+            let res = bg
+                .spawn(async move {
+                    let bytes = export_book_bytes(&book_clone, &path).map_err(|e| e.to_string())?;
+                    let n = bytes.len();
+                    std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
+                    Ok::<_, String>((path, n))
+                })
+                .await;
+            let _ = view.update_in(cx, |view, window, cx| {
+                view.busy_message = None;
+                match res {
+                    Ok((path, n)) => notify_simple(
+                        window,
+                        cx,
+                        "Exported Book",
+                        format!("{} ({n} bytes)", path.display()),
+                    ),
+                    Err(e) => notify_simple(window, cx, "Export failed", e),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn optimize_epub(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2129,29 +2398,41 @@ Sidebars & Panels:
         let Some(path) = chosen else {
             return;
         };
-        match optimize_book_epub3(book) {
-            Ok((bytes, report)) => {
-                let n = bytes.len();
-                let ok = std::fs::write(&path, &bytes).is_ok();
-                notify_simple(
-                    window,
-                    cx,
-                    if ok {
-                        "Saved Optimized EPUB"
-                    } else {
-                        "Write failed"
-                    },
-                    format!(
-                        "{} ({n} bytes · saved {} B, {} deduped assets, {} purged CSS rules)",
-                        path.display(),
-                        report.saved_bytes,
-                        report.deduplicated_assets_count,
-                        report.purged_css_rules_count
+        let book_clone = book.clone();
+        self.busy_message = Some("Optimizing EPUB 3…".into());
+        cx.notify();
+        let bg = cx.background_executor().clone();
+        cx.spawn_in(window, async move |view, cx| {
+            let res = bg
+                .spawn(async move {
+                    let (bytes, report) =
+                        optimize_book_epub3(&book_clone).map_err(|e| e.to_string())?;
+                    let n = bytes.len();
+                    std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
+                    Ok::<_, String>((path, n, report))
+                })
+                .await;
+            let _ = view.update_in(cx, |view, window, cx| {
+                view.busy_message = None;
+                match res {
+                    Ok((path, n, report)) => notify_simple(
+                        window,
+                        cx,
+                        "Saved Optimized EPUB",
+                        format!(
+                            "{} ({n} bytes · saved {} B, {} deduped assets, {} purged CSS rules)",
+                            path.display(),
+                            report.saved_bytes,
+                            report.deduplicated_assets_count,
+                            report.purged_css_rules_count
+                        ),
                     ),
-                );
-            }
-            Err(e) => notify_simple(window, cx, "Optimize failed", e.to_string()),
-        }
+                    Err(e) => notify_simple(window, cx, "Optimize failed", e),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn citations_body(&self) -> Option<String> {
@@ -2211,16 +2492,104 @@ Sidebars & Panels:
         let chosen = rfd::FileDialog::new()
             .set_file_name(&filename)
             .add_filter("Markdown", &["md", "markdown"])
+            .add_filter("W3C Web Annotations (JSON)", &["json"])
             .save_file();
         if let Some(path) = chosen {
-            let out = self.annotations_to_markdown(&title, &author);
-            let ok = std::fs::write(&path, out).is_ok();
-            notify_simple(
-                window,
-                cx,
-                if ok { "Saved Notes" } else { "Export Failed" },
-                format!("{}", path.display()),
-            );
+            let is_json = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case("json"));
+            if is_json && let Some(book) = &self.book {
+                match format_annotations_w3c_json(book, &self.annotations, &self.bookmarks) {
+                    Ok(json) => {
+                        let ok = std::fs::write(&path, json).is_ok();
+                        notify_simple(
+                            window,
+                            cx,
+                            if ok {
+                                "Saved W3C Annotations"
+                            } else {
+                                "Export Failed"
+                            },
+                            format!("{}", path.display()),
+                        );
+                    }
+                    Err(e) => notify_simple(window, cx, "Export Failed", e),
+                }
+            } else {
+                let out = self.annotations_to_markdown(&title, &author);
+                let ok = std::fs::write(&path, out).is_ok();
+                notify_simple(
+                    window,
+                    cx,
+                    if ok { "Saved Notes" } else { "Export Failed" },
+                    format!("{}", path.display()),
+                );
+            }
+        }
+    }
+
+    fn export_search_results_json(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(book) = &self.book else {
+            return;
+        };
+        if self.search_results.is_empty() {
+            return;
+        }
+        let filename = format!("{}_search.json", sanitize_filename(&book.metadata().title));
+        let chosen = rfd::FileDialog::new()
+            .set_file_name(&filename)
+            .add_filter("Readium Search JSON", &["json"])
+            .save_file();
+        if let Some(path) = chosen {
+            match book.to_readium_search_json(&self.search_results, &self.active_search_query) {
+                Ok(json) => {
+                    let ok = std::fs::write(&path, json).is_ok();
+                    notify_simple(
+                        window,
+                        cx,
+                        if ok {
+                            "Saved Readium Search JSON"
+                        } else {
+                            "Export Failed"
+                        },
+                        format!("{}", path.display()),
+                    );
+                }
+                Err(e) => notify_simple(window, cx, "Export Failed", e.to_string()),
+            }
+        }
+    }
+
+    fn export_annotations_w3c_json(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(book) = &self.book else {
+            return;
+        };
+        let filename = format!(
+            "{}_annotations.json",
+            sanitize_filename(&book.metadata().title)
+        );
+        let chosen = rfd::FileDialog::new()
+            .set_file_name(&filename)
+            .add_filter("W3C Web Annotations (JSON)", &["json"])
+            .save_file();
+        if let Some(path) = chosen {
+            match format_annotations_w3c_json(book, &self.annotations, &self.bookmarks) {
+                Ok(json) => {
+                    let ok = std::fs::write(&path, json).is_ok();
+                    notify_simple(
+                        window,
+                        cx,
+                        if ok {
+                            "Saved W3C Annotations"
+                        } else {
+                            "Export Failed"
+                        },
+                        format!("{}", path.display()),
+                    );
+                }
+                Err(e) => notify_simple(window, cx, "Export Failed", e),
+            }
         }
     }
     fn render_modal_overlay(
@@ -2369,6 +2738,13 @@ impl Render for ReaderView {
         }
 
         let max_scroll_y: f32 = self.scroll_handle.max_offset().y.into();
+        if let Some(frac) = self.pending_scroll_fraction
+            && max_scroll_y > 1.0
+        {
+            self.scroll_handle
+                .set_offset(point(px(0.0), px(-(frac * max_scroll_y))));
+            self.pending_scroll_fraction = None;
+        }
         let cur_scroll_y: f32 = (-self.scroll_handle.offset().y).into();
         let scroll_frac = if max_scroll_y > 1.0 {
             (cur_scroll_y / max_scroll_y).clamp(0.0, 1.0)
@@ -2396,25 +2772,58 @@ impl Render for ReaderView {
             if self.rtl_mode {
                 parts.push("RTL flow".into());
             }
-            if let Some(page) = current_page_label(b, self.current) {
+            if let Some(page) = self
+                .cached_book_progress
+                .as_ref()
+                .and_then(|bp| bp.page_label.as_deref())
+                .map(|p| format!("p. {p}"))
+                .or_else(|| current_page_label(b, self.current))
+            {
                 parts.push(page);
             }
-            let wpm = (self.state.wpm.max(100) as f32).max(100.0);
-            let sec_words = self.cached_word_count;
-            if sec_words > 0 {
-                let rem_words = ((1.0 - scroll_frac) * sec_words as f32).round() as usize;
-                let sec_mins = ((rem_words as f32 / wpm).ceil() as usize).max(1);
-                parts.push(format!("{rem_words} words (~{sec_mins}m left in ch.)"));
-            }
-            let total_sections = b.sections().len();
-            if total_sections > self.current + 1 && sec_words > 0 {
-                let rem_sec = total_sections - (self.current + 1);
-                let rem_mins =
-                    (((rem_sec * sec_words.max(180)) as f32 / wpm).round() as usize).max(1);
-                if rem_mins >= 60 {
-                    parts.push(format!("~{}h {}m in book", rem_mins / 60, rem_mins % 60));
-                } else {
-                    parts.push(format!("~{rem_mins}m in book"));
+            if let Some(bp) = &self.cached_book_progress {
+                if bp.total_locations > 0 {
+                    parts.push(format!("Loc {}/{}", bp.location, bp.total_locations));
+                }
+                let sec_words = self.cached_word_count;
+                if sec_words > 0 {
+                    let rem_words = ((1.0 - scroll_frac) * sec_words as f32).round() as usize;
+                    let ch_mins = (bp.chapter_time_left_minutes * (1.0 - scroll_frac))
+                        .ceil()
+                        .max(1.0) as usize;
+                    parts.push(format!("{rem_words} words (~{ch_mins}m left in ch.)"));
+                }
+                let book_mins = (bp.book_time_left_minutes
+                    - bp.chapter_time_left_minutes * scroll_frac)
+                    .max(0.0)
+                    .round() as usize;
+                if book_mins >= 60 {
+                    parts.push(format!(
+                        "~{}h {}m left in book",
+                        book_mins / 60,
+                        book_mins % 60
+                    ));
+                } else if book_mins > 0 {
+                    parts.push(format!("~{book_mins}m left in book"));
+                }
+            } else {
+                let wpm = (self.state.wpm.max(100) as f32).max(100.0);
+                let sec_words = self.cached_word_count;
+                if sec_words > 0 {
+                    let rem_words = ((1.0 - scroll_frac) * sec_words as f32).round() as usize;
+                    let sec_mins = ((rem_words as f32 / wpm).ceil() as usize).max(1);
+                    parts.push(format!("{rem_words} words (~{sec_mins}m left in ch.)"));
+                }
+                let total_sections = b.sections().len();
+                if total_sections > self.current + 1 && sec_words > 0 {
+                    let rem_sec = total_sections - (self.current + 1);
+                    let rem_mins =
+                        (((rem_sec * sec_words.max(180)) as f32 / wpm).round() as usize).max(1);
+                    if rem_mins >= 60 {
+                        parts.push(format!("~{}h {}m in book", rem_mins / 60, rem_mins % 60));
+                    } else {
+                        parts.push(format!("~{rem_mins}m in book"));
+                    }
                 }
             }
             parts.push(format!("{live_progress:.1}%"));
@@ -2514,6 +2923,28 @@ impl Render for ReaderView {
                 if let Some(state) = &self.toc_state {
                     v = v.child(div().text_size(px(11.0)).child("Quick section:"));
                     v = v.child(Select::new(state));
+                }
+                if !self.landmarks.is_empty() {
+                    v = v.child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(palette.muted)
+                            .child("Landmarks:"),
+                    );
+                    let mut lm_list = v_flex().gap_1();
+                    for (i, lm) in self.landmarks.iter().enumerate() {
+                        let idx = lm.section_index;
+                        let label = truncate(&lm.label, 30);
+                        lm_list = lm_list.child(
+                            Button::new(format!("lm_{i}"))
+                                .ghost()
+                                .label(label)
+                                .on_click(cx.listener(move |view, _, _, cx| {
+                                    view.jump(idx, cx);
+                                })),
+                        );
+                    }
+                    v = v.child(lm_list);
                 }
                 if !self.toc_items.is_empty() {
                     v = v.child(
@@ -2642,9 +3073,12 @@ impl Render for ReaderView {
                     cx.listener(|view, _ev, window, cx| view.copy_annotations_markdown(window, cx));
                 let on_export_file =
                     cx.listener(|view, _ev, window, cx| view.export_annotations(window, cx));
+                let on_export_w3c = cx
+                    .listener(|view, _ev, window, cx| view.export_annotations_w3c_json(window, cx));
                 v = v.child(
                     h_flex()
-                        .gap_2()
+                        .gap_1()
+                        .flex_wrap()
                         .child(
                             Button::new("addnote")
                                 .label("Add note")
@@ -2661,6 +3095,12 @@ impl Render for ReaderView {
                                 .ghost()
                                 .label("Export")
                                 .on_click(on_export_file),
+                        )
+                        .child(
+                            Button::new("exportw3c")
+                                .ghost()
+                                .label("W3C JSON")
+                                .on_click(on_export_w3c),
                         ),
                 );
                 let mut color_row = h_flex().gap_2().items_center().child(
@@ -2735,17 +3175,27 @@ impl Render for ReaderView {
                     view.search_regex = !view.search_regex;
                     cx.notify();
                 });
-                v = v.child(
-                    h_flex()
-                        .gap_2()
-                        .child(Button::new("dosearch").label("Search").on_click(on_search))
-                        .child(
-                            Button::new("toggleregex")
-                                .ghost()
-                                .label(regex_label)
-                                .on_click(on_toggle_regex),
-                        ),
-                );
+                let mut search_bar = h_flex()
+                    .gap_2()
+                    .flex_wrap()
+                    .child(Button::new("dosearch").label("Search").on_click(on_search))
+                    .child(
+                        Button::new("toggleregex")
+                            .ghost()
+                            .label(regex_label)
+                            .on_click(on_toggle_regex),
+                    );
+                if !self.search_results.is_empty() {
+                    search_bar = search_bar.child(
+                        Button::new("exportsearchjson")
+                            .ghost()
+                            .label("Export JSON")
+                            .on_click(cx.listener(|view, _ev, window, cx| {
+                                view.export_search_results_json(window, cx)
+                            })),
+                    );
+                }
+                v = v.child(search_bar);
                 for (i, r) in self.search_results.iter().take(50).enumerate() {
                     let sec = r.spine_index;
                     let snippet = r.snippet.clone();
@@ -2765,34 +3215,29 @@ impl Render for ReaderView {
             SidebarMode::Footnotes => {
                 let mut v = v_flex().gap_2().p_2();
                 v = v.child(div().text_size(px(14.0)).child("Footnotes"));
-                if let Some(book) = &self.book
-                    && let Ok(sec) = book.get_section(self.current)
-                {
-                    let notes = sec.extract_footnotes();
-                    if notes.is_empty() {
-                        v = v.child(div().text_size(px(12.0)).child("No footnotes in section."));
-                    } else {
-                        for (i, f) in notes.into_iter().enumerate() {
-                            let text = if f.plain_text.trim().is_empty() {
-                                f.html_content.clone()
-                            } else {
-                                f.plain_text.clone()
-                            };
-                            let text_clone = text.clone();
-                            let label = f.label.clone();
-                            v = v.child(
-                                Button::new(format!("fn{}", i))
-                                    .ghost()
-                                    .label(format!("{}: {}", label, text))
-                                    .on_click(cx.listener(move |view, _, _, cx| {
-                                        view.show_modal(
-                                            &format!("Footnote {label}"),
-                                            text_clone.clone(),
-                                            cx,
-                                        );
-                                    })),
-                            );
-                        }
+                if self.cached_footnotes.is_empty() {
+                    v = v.child(div().text_size(px(12.0)).child("No footnotes in section."));
+                } else {
+                    for (i, f) in self.cached_footnotes.iter().enumerate() {
+                        let text = if f.plain_text.trim().is_empty() {
+                            f.html_content.clone()
+                        } else {
+                            f.plain_text.clone()
+                        };
+                        let text_clone = text.clone();
+                        let label = f.label.clone();
+                        v = v.child(
+                            Button::new(format!("fn{}", i))
+                                .ghost()
+                                .label(format!("{}: {}", label, text))
+                                .on_click(cx.listener(move |view, _, _, cx| {
+                                    view.show_modal(
+                                        &format!("Footnote {label}"),
+                                        text_clone.clone(),
+                                        cx,
+                                    );
+                                })),
+                        );
                     }
                 }
                 v
@@ -3653,18 +4098,10 @@ impl Render for ReaderView {
         };
 
         let dom2 = if self.two_page {
-            if let Some((idx, dom)) = &self.cached_dom2
-                && *idx == self.current + 1
-            {
-                Some(dom.clone())
-            } else if let Some(book) = &self.book {
-                book.get_section(self.current + 1).ok().map(|s| {
-                    let inlined = inline_svg_images(&s.processed_html, book, &s.full_path);
-                    ebook_rs::EbookDomTree::parse(&inlined)
-                })
-            } else {
-                None
-            }
+            self.cached_dom2
+                .as_ref()
+                .filter(|(idx, _)| *idx == self.current + 1)
+                .map(|(_, dom)| dom.clone())
         } else {
             None
         };
@@ -3681,88 +4118,87 @@ impl Render for ReaderView {
         } else {
             Some(self.active_search_query.as_str())
         };
-        let render_page =
-            |id: String,
-             section_idx: usize,
-             dom: Option<&ebook_rs::EbookDomTree>,
-             fallback_html: String,
-             sel_handle: Option<gpui_kit::base::TextSelectionHandle>| {
-                let page_div = div()
-                    .min_w(px(0.0))
-                    .max_w(px(max_width))
-                    .w_full()
-                    .h_full()
-                    .px(px(margin))
-                    .text_size(px(font_size))
-                    .line_height(px(font_size * line_height))
-                    .font_family(crate::renderer::resolve_font_family(&self.font_family))
-                    .text_align(TextAlign::Left)
-                    .overflow_hidden();
+        let render_page = |id: String,
+                           section_idx: usize,
+                           dom: Option<&ebook_rs::EbookDomTree>,
+                           fallback_html: String| {
+            let page_div = div()
+                .min_w(px(0.0))
+                .max_w(px(max_width))
+                .w_full()
+                .h_full()
+                .px(px(margin))
+                .text_size(px(font_size))
+                .line_height(px(font_size * line_height))
+                .font_family(crate::renderer::resolve_font_family(&self.font_family))
+                .text_align(TextAlign::Left)
+                .overflow_hidden();
 
-                if let Some(dom) = dom {
-                    let sec_annotations: Vec<Annotation> = self
-                        .annotations
-                        .iter()
-                        .filter(|a| a.section == section_idx)
-                        .cloned()
-                        .collect();
-                    let cfg = RenderConfig {
-                        id_prefix: &id,
-                        theme: &self.theme,
-                        palette,
-                        base_font_size: font_size,
-                        line_height,
-                        font_family: &self.font_family,
-                        text_align: &self.text_align,
-                        rtl_mode: self.rtl_mode,
-                        column_px,
-                        annotations: &sec_annotations,
-                        active_search,
-                        selection_handle: sel_handle,
-                        image_cache: &self.image_cache,
-                        on_link_click: on_link_click.clone(),
-                    };
-                    let rendered = render_ebook_dom(dom, &cfg);
-                    if section_idx == self.current {
-                        page_div
-                            .relative()
-                            .child(
-                                div()
-                                    .id(SharedString::from(format!("{id}-scroll")))
-                                    .w_full()
-                                    .h_full()
-                                    .overflow_y_scroll()
-                                    .track_scroll(&self.scroll_handle)
-                                    .py_2()
-                                    .child(rendered),
-                            )
-                            .child(Scrollbar::vertical(&self.scroll_handle))
-                    } else {
-                        page_div.child(
+            if let Some(dom) = dom {
+                let sec_annotations: Vec<Annotation> = self
+                    .annotations
+                    .iter()
+                    .filter(|a| a.section == section_idx)
+                    .cloned()
+                    .collect();
+                let scoped_id = format!("{id}-s{section_idx}");
+                let cfg = RenderConfig {
+                    id_prefix: &scoped_id,
+                    order_base: (section_idx as u64 + 1) * 100_000,
+                    theme: &self.theme,
+                    palette,
+                    base_font_size: font_size,
+                    line_height,
+                    font_family: &self.font_family,
+                    text_align: &self.text_align,
+                    rtl_mode: self.rtl_mode,
+                    column_px,
+                    annotations: &sec_annotations,
+                    active_search,
+                    image_cache: &self.image_cache,
+                    on_link_click: on_link_click.clone(),
+                };
+                let rendered = render_ebook_dom(dom, &cfg);
+                if section_idx == self.current {
+                    page_div
+                        .relative()
+                        .child(
                             div()
                                 .id(SharedString::from(format!("{id}-scroll")))
                                 .w_full()
                                 .h_full()
-                                .overflow_y_scrollbar()
+                                .overflow_y_scroll()
+                                .track_scroll(&self.scroll_handle)
                                 .py_2()
                                 .child(rendered),
                         )
-                    }
+                        .child(Scrollbar::vertical(&self.scroll_handle))
                 } else {
                     page_div.child(
-                        TextView::html(id.clone(), fallback_html)
-                            .selectable(true)
-                            .scrollable(true)
-                            .on_link_click({
-                                let view = view.clone();
-                                move |url, _event, _window, cx| {
-                                    let url = url.to_string();
-                                    view.update(cx, |v, cx| v.handle_link_click(&url, cx));
-                                }
-                            }),
+                        div()
+                            .id(SharedString::from(format!("{id}-scroll")))
+                            .w_full()
+                            .h_full()
+                            .overflow_y_scrollbar()
+                            .py_2()
+                            .child(rendered),
                     )
                 }
-            };
+            } else {
+                page_div.child(
+                    TextView::html(id.clone(), fallback_html)
+                        .selectable(true)
+                        .scrollable(true)
+                        .on_link_click({
+                            let view = view.clone();
+                            move |url, _event, _window, cx| {
+                                let url = url.to_string();
+                                view.update(cx, |v, cx| v.handle_link_click(&url, cx));
+                            }
+                        }),
+                )
+            }
+        };
         let margin_prev = div().flex().items_center().px_1().child(
             Button::new("edge-prev")
                 .ghost()
@@ -3810,14 +4246,12 @@ impl Render for ReaderView {
                         self.current,
                         self.cached_dom.as_ref(),
                         html.clone(),
-                        self.page1_selection.clone(),
                     ))
                     .child(render_page(
                         "content2".to_string(),
                         self.current + 1,
                         dom2.as_ref(),
                         String::new(),
-                        self.page2_selection.clone(),
                     ))
                     .into_any_element()
             } else {
@@ -3833,7 +4267,6 @@ impl Render for ReaderView {
                         self.current,
                         self.cached_dom.as_ref(),
                         html.clone(),
-                        self.page1_selection.clone(),
                     ))
                     .into_any_element()
             })
@@ -3877,7 +4310,10 @@ impl Render for ReaderView {
             let alt = event.keystroke.modifiers.alt;
 
             if key == "escape" {
-                if view.passphrase_modal {
+                if view.command_palette_open {
+                    view.command_palette_open = false;
+                    cx.notify();
+                } else if view.passphrase_modal {
                     view.cancel_passphrase(cx);
                 } else if view.export_modal {
                     view.export_modal = false;
@@ -3930,6 +4366,10 @@ impl Render for ReaderView {
                         window.set_window_title("eParna");
                         view.go_library(cx);
                     }
+                    "k" if !view.show_library => {
+                        view.command_palette_open = !view.command_palette_open;
+                        cx.notify();
+                    }
                     _ => {}
                 }
             } else if alt {
@@ -3938,8 +4378,10 @@ impl Render for ReaderView {
                 }
             } else {
                 match key.as_str() {
-                    "right" | "arrowright" | "pagedown" | "j" => view.next(cx),
-                    "left" | "arrowleft" | "pageup" | "k" => view.prev(cx),
+                    "right" | "arrowright" | "j" => view.next(cx),
+                    "left" | "arrowleft" | "k" => view.prev(cx),
+                    "pagedown" => view.page_down(cx),
+                    "pageup" => view.page_up(cx),
                     "backspace" if !view.show_library => view.jump_back(cx),
                     "z" if !view.show_library => view.toggle_zen_mode(cx),
                     "p" if !view.show_library => {
@@ -3952,9 +4394,9 @@ impl Render for ReaderView {
                     }
                     " " | "space" => {
                         if event.keystroke.modifiers.shift {
-                            view.prev(cx);
+                            view.page_up(cx);
                         } else {
-                            view.next(cx);
+                            view.page_down(cx);
                         }
                     }
                     "home" => view.jump(0, cx),
@@ -4053,6 +4495,7 @@ impl Render for ReaderView {
                             ("Rocket eBook (.rb)", "rb"),
                             ("Psion TCR", "tcr"),
                             ("RAG Chunks (.json)", "json"),
+                            ("WebPub Manifest (.webpub.json)", "webpub.json"),
                         ],
                     ),
                 ];
@@ -4060,6 +4503,9 @@ impl Render for ReaderView {
                 for &(group_name, formats) in EXPORT_GROUPS {
                     let mut row = h_flex().gap_2().flex_wrap();
                     for &(label, ext) in formats {
+                        if !is_supported_output_format(ext) {
+                            continue;
+                        }
                         let lbl = label.to_string();
                         let ext_s = ext.to_string();
                         row = row.child(
@@ -4331,6 +4777,7 @@ impl Render for ReaderView {
             && self.modal.is_none()
             && !self.passphrase_modal
             && !self.export_modal
+            && !self.command_palette_open
         {
             v_flex()
                 .relative()
@@ -4341,6 +4788,9 @@ impl Render for ReaderView {
                 .text_color(fg)
                 .track_focus(&self.focus_handle)
                 .on_key_down(on_key)
+                .on_drop(cx.listener(|view, paths: &ExternalPaths, window, cx| {
+                    view.handle_dropped_paths(paths, window, cx);
+                }))
                 .child(div().flex_1().size_full().overflow_hidden().child(body))
                 .child(
                     div().absolute().top_2().right_3().child(
@@ -4369,6 +4819,9 @@ impl Render for ReaderView {
                 .text_color(fg)
                 .track_focus(&self.focus_handle)
                 .on_key_down(on_key)
+                .on_drop(cx.listener(|view, paths: &ExternalPaths, window, cx| {
+                    view.handle_dropped_paths(paths, window, cx);
+                }))
                 .child(header)
                 .child(find_bar)
                 .child(body)
@@ -4378,12 +4831,298 @@ impl Render for ReaderView {
         if let Some(pop) = floating_popover
             && !self.zen_mode
             && overlay.is_none()
+            && !self.command_palette_open
         {
             root = root.child(pop);
         }
 
+        // Floating selection action bar
+        let sel_preview = if overlay.is_none() && !self.command_palette_open {
+            Self::selected_text(window, cx)
+        } else {
+            String::new()
+        };
+        if !sel_preview.is_empty() {
+            let mut sel_bar = h_flex()
+                .gap_1p5()
+                .items_center()
+                .px_2p5()
+                .py_1()
+                .rounded_full()
+                .bg(palette.surface)
+                .border_1()
+                .border_color(palette.border)
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
+            for color_name in ["yellow", "green", "blue", "pink", "purple"] {
+                let c = color_name.to_string();
+                let selected = self.highlight_color == color_name;
+                sel_bar = sel_bar.child(highlight_dot(
+                    format!("fsel-{color_name}"),
+                    color_name,
+                    selected,
+                    palette.fg,
+                    cx.listener(move |v, _, window, cx| {
+                        v.highlight_color = c.clone();
+                        v.highlight_selection(window, cx);
+                    }),
+                ));
+            }
+            let sel_for_lookup = sel_preview.clone();
+            sel_bar =
+                sel_bar
+                    .child(
+                        Button::new("fsel-copy")
+                            .ghost()
+                            .label("Copy")
+                            .on_click(cx.listener(|v, _, window, cx| v.copy_selection(window, cx))),
+                    )
+                    .child(Button::new("fsel-lookup").ghost().label("Define").on_click(
+                        cx.listener(move |v, _, _, cx| {
+                            let w = sel_for_lookup.split_whitespace().next().unwrap_or("");
+                            if !w.is_empty() {
+                                v.sidebar_open = true;
+                                v.lookup_word(w, cx);
+                            }
+                        }),
+                    ))
+                    .child(
+                        Button::new("fsel-tts")
+                            .ghost()
+                            .label("Speak")
+                            .on_click(cx.listener(|v, _, window, cx| v.toggle_tts(window, cx))),
+                    );
+            root = root.child(
+                div()
+                    .absolute()
+                    .bottom(px(54.0))
+                    .left_0()
+                    .right_0()
+                    .flex()
+                    .justify_center()
+                    .child(sel_bar),
+            );
+        }
+
+        // Command Palette overlay (Ctrl+K)
+        if self.command_palette_open {
+            let cp_q = self
+                .command_palette_input
+                .read(cx)
+                .value()
+                .trim()
+                .to_ascii_lowercase();
+            let mut cp_items: Vec<AnyElement> = Vec::new();
+            let mut count = 0usize;
+
+            for (i, lm) in self.landmarks.iter().enumerate() {
+                if count >= 14 {
+                    break;
+                }
+                if cp_q.is_empty() || lm.label.to_ascii_lowercase().contains(&cp_q) {
+                    let idx = lm.section_index;
+                    cp_items.push(
+                        Button::new(format!("cp-lm-{i}"))
+                            .ghost()
+                            .label(format!("Landmark: {}", truncate(&lm.label, 48)))
+                            .on_click(cx.listener(move |v, _, _, cx| {
+                                v.command_palette_open = false;
+                                v.jump(idx, cx);
+                            }))
+                            .into_any_element(),
+                    );
+                    count += 1;
+                }
+            }
+            for (i, item) in self.toc_items.iter().enumerate() {
+                if count >= 14 {
+                    break;
+                }
+                if cp_q.is_empty() || item.label.to_ascii_lowercase().contains(&cp_q) {
+                    let idx = item.section_index;
+                    cp_items.push(
+                        Button::new(format!("cp-toc-{i}"))
+                            .ghost()
+                            .label(format!("Chapter: {}", truncate(&item.label, 48)))
+                            .on_click(cx.listener(move |v, _, _, cx| {
+                                v.command_palette_open = false;
+                                v.active_toc_index = Some(i);
+                                v.jump(idx, cx);
+                            }))
+                            .into_any_element(),
+                    );
+                    count += 1;
+                }
+            }
+            for t in [
+                "Light",
+                "Sepia",
+                "Dark",
+                "OLED Black",
+                "Nord",
+                "Solarized",
+                "Solarized Dark",
+                "E-Ink",
+            ] {
+                if count >= 14 {
+                    break;
+                }
+                if cp_q.is_empty() || format!("theme {t}").to_ascii_lowercase().contains(&cp_q) {
+                    let theme_name = t.to_string();
+                    cp_items.push(
+                        Button::new(format!("cp-th-{t}"))
+                            .ghost()
+                            .label(format!("Theme: {t}"))
+                            .on_click(cx.listener(move |v, _, _, cx| {
+                                v.command_palette_open = false;
+                                v.set_theme(&theme_name, cx);
+                            }))
+                            .into_any_element(),
+                    );
+                    count += 1;
+                }
+            }
+            let actions: &[(&str, &str)] = &[
+                ("zen", "Action: Toggle Zen Mode"),
+                ("twopage", "Action: Toggle Two-Page Spread"),
+                ("tts", "Action: Toggle Read Aloud"),
+                ("info", "Action: Book Info & Analytics"),
+                ("citations", "Action: Academic Citations"),
+                ("validate", "Action: Validate EPUB"),
+                ("optimize", "Action: Optimize EPUB 3"),
+                ("export", "Action: Export Book…"),
+                ("library", "Action: Back to Library"),
+            ];
+            for &(act_id, act_label) in actions {
+                if count >= 14 {
+                    break;
+                }
+                if cp_q.is_empty() || act_label.to_ascii_lowercase().contains(&cp_q) {
+                    cp_items.push(
+                        Button::new(format!("cp-act-{act_id}"))
+                            .ghost()
+                            .label(act_label)
+                            .on_click(cx.listener(move |v, _, window, cx| {
+                                v.command_palette_open = false;
+                                match act_id {
+                                    "zen" => v.toggle_zen_mode(cx),
+                                    "twopage" => v.toggle_two_page(cx),
+                                    "tts" => v.toggle_tts(window, cx),
+                                    "info" => {
+                                        if let Some(body) = v.book_info_body() {
+                                            v.show_modal("Book Info", body, cx);
+                                        }
+                                    }
+                                    "citations" => {
+                                        if let Some(body) = v.citations_body() {
+                                            v.show_modal(
+                                                "Citations (BibTeX, APA, MLA, Chicago)",
+                                                body,
+                                                cx,
+                                            );
+                                        }
+                                    }
+                                    "validate" => {
+                                        if let Some(body) = v.validation_body() {
+                                            v.show_modal("EPUB Validation", body, cx);
+                                        }
+                                    }
+                                    "optimize" => v.optimize_epub(window, cx),
+                                    "export" => {
+                                        v.export_modal = true;
+                                        cx.notify();
+                                    }
+                                    "library" => {
+                                        window.set_window_title("eParna");
+                                        v.go_library(cx);
+                                    }
+                                    _ => {}
+                                }
+                            }))
+                            .into_any_element(),
+                    );
+                    count += 1;
+                }
+            }
+
+            root = root.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .bg(rgba(0x00000088))
+                    .flex()
+                    .items_start()
+                    .justify_center()
+                    .pt(px(72.0))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|v, _, _, cx| {
+                            v.command_palette_open = false;
+                            cx.notify();
+                        }),
+                    )
+                    .child(
+                        v_flex()
+                            .w(px(520.0))
+                            .max_h(px(460.0))
+                            .gap_2()
+                            .rounded_lg()
+                            .bg(palette.bg)
+                            .text_color(palette.fg)
+                            .border_1()
+                            .border_color(palette.border)
+                            .p_3()
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .child(
+                                h_flex()
+                                    .justify_between()
+                                    .items_center()
+                                    .child(
+                                        div()
+                                            .text_size(px(13.0))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .child("Command Palette (Ctrl+K)"),
+                                    )
+                                    .child(
+                                        Button::new("cp-close").ghost().label("\u{2715}").on_click(
+                                            cx.listener(|v, _, _, cx| {
+                                                v.command_palette_open = false;
+                                                cx.notify();
+                                            }),
+                                        ),
+                                    ),
+                            )
+                            .child(Input::new(&self.command_palette_input))
+                            .child(
+                                div()
+                                    .id("cp-list-scroll")
+                                    .flex_1()
+                                    .overflow_y_scrollbar()
+                                    .child(v_flex().gap_1().children(cp_items)),
+                            ),
+                    ),
+            );
+        }
+
         if let Some(ov) = overlay {
             root = root.child(ov);
+        }
+
+        if let Some(busy) = &self.busy_message {
+            root = root.child(
+                div()
+                    .absolute()
+                    .bottom(px(44.0))
+                    .right(px(16.0))
+                    .px_3()
+                    .py_1p5()
+                    .rounded_md()
+                    .bg(palette.surface)
+                    .border_1()
+                    .border_color(palette.border)
+                    .text_size(px(12.0))
+                    .text_color(palette.fg)
+                    .child(busy.clone()),
+            );
         }
 
         root.into_any_element()

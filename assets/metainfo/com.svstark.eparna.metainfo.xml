@@ -68,6 +68,18 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.9.3" date="2026-11-27">
+      <description>
+        <p>
+          Upgraded to ebook-rs 0.20.0 (pure Rust, zero C zstd dependency), fixed custom GPUI
+          renderer cross-paragraph text selection, moved heavy I/O (book opening, cover backfill,
+          exports, EPUB optimization) to background threads, and added a floating selection
+          toolbar, Command Palette (Ctrl+K), drag-and-drop opening, paged stepping, exact
+          mid-chapter scroll restore, EPUB 3 Landmarks, code syntax highlighting, W3C Web
+          Annotation/WebPub/Readium Search JSON exports, and missing-file relinking.
+        </p>
+      </description>
+    </release>
     <release version="0.9.2" date="2026-11-24">
       <description>
         <p>
